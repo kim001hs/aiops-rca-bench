@@ -21,7 +21,7 @@
 * **평가 러너 & 채점관 (Benchmark Runner + 채점관 LLM):**  
   실제 주입된 결함의 **정답(Ground Truth) 메타데이터**와 원천 텔레메트리를 대조하여 다면 채점합니다. 원인 일치는 규칙으로 채점하고 근거 타당성은 기준표(Rubric) 기반 LLM으로 평가하며, 판정이 모호한 사례는 사람이 직접 교차 검토합니다. 공정한 평가를 위해 실험군(도구 구성명)을 가린 블라인드 평가를 원칙으로 합니다.
 * **실패 분석 기반 표적 개선 (Failure-Driven Iteration):**  
-  기본 베이스라인에서 발생하는 실패 사례를 체계적으로 분류하고, 부족한 관측 데이터(Loki 중앙 로그, Tempo 분산 트레이스) 및 도메인 지식(런북)을 단계별로 보완하며 전후 성능 변화를 실측 검증합니다.
+  기본 베이스라인에서 발생하는 실패 사례를 체계적으로 분류하고, 분석된 원인에 맞춰 필요한 관측 데이터(중앙 로그, 분산 트레이스 등) 및 도메인 지식(런북)을 단계별로 보완하며 전후 성능 변화를 실측 검증합니다.
 
 ---
 
@@ -38,7 +38,7 @@
    - 기본 베이스라인(`kubectl` 기본 파드 로그 + Prometheus 메트릭) 구성에서의 기준 정확도, TTD, 비용 측정
 2. **[2단계] 실패 분석에 따른 표적 개선 및 전후 비교 실측:**  
    - 베이스라인 실패 로그 및 도구 호출 궤적(Trajectory)을 체계적으로 분류
-   - 원인에 맞춰 모니터링 스택(Loki, Tempo) 및 마이크로서비스 런북을 하나씩 추가하며 성능 향상과 부작용(비용/지연 증가)을 실측 비교
+   - 진단 실패를 유발한 원인에 맞춰 필요한 모니터링 도구(중앙 로그 수집기, 분산 트레이싱 등) 및 마이크로서비스 런북을 선별 추가하며 성능 개선 및 부작용(비용/지연 증가)을 실측 비교
 
 ---
 
@@ -46,9 +46,9 @@
 
 ```mermaid
 flowchart LR
-    Apps["Online Boutique<br/>(11 MSA on EKS)"] --> Obs["Observability Layer<br/>(Prometheus / Loki / Tempo)"]
+    Apps["Online Boutique<br/>(11 MSA on EKS)"] --> Obs["Observability Layer<br/>(Prometheus / Alertmanager)"]
     Obs -->|Alertmanager Webhook| Engine["Investigation Engine<br/>(CNCF HolmesGPT ReAct Loop)"]
-    Engine --> Report["Structured RCA Report<br/>(Service, Cause, Evidence)"]
+    Engine --> Report["Structured RCA Report<br/>(Component, Cause, Evidence)"]
     
     Chaos["Chaos Mesh<br/>(카오스 장애 주입)"] -.->|Ground Truth 대조| Eval["자동 평가 러너<br/>(규칙 채점 + 채점관 LLM)"]
     Report -.-> Eval
@@ -62,16 +62,16 @@ flowchart LR
                                     │ Telemetry Streaming
 ┌───────────────────────────────────▼────────────────────────────────────┐
 │                       Observability & Alerts Layer                     │
-│  - Metrics: Prometheus / Alertmanager (기본 베이스라인)                │
-│  - Logs: kubectl logs (기본) ➡️ Grafana Loki/Alloy (중앙 집중형 보존/검색)│
-│  - Traces: Tempo / OpenTelemetry (분산 서비스 간 지연 추적)            │
+│  - Baseline: Prometheus / Alertmanager (메트릭 수집 및 경보 인입)        │
+│  - 기본 로그: kubectl logs (파드 표준 출력 로그)                         │
+│  - 점진적 확장(예정): 실패 분석 결과에 따라 필요한 모니터링 도구 선별 추가  │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │ Webhook / Alert Event
 ┌───────────────────────────────────▼────────────────────────────────────┐
 │                  Autonomous Investigation Engine                       │
 │  [ CNCF HolmesGPT : Alert 인입 → ReAct 조사 → 근거 수집 → RCA 도출 ]   │
 │   • Baseline: kubectl (파드 상태/이벤트/최근로그) + PromQL               │
-│   • Targeted: Loki LogQL + Tempo Traces + MSA 의존성 런북(Runbooks)   │
+│   • 점진적 확장: 실패 원인 분석에 기반한 모니터링 도구 연동 및 런북(Runbooks)│
 └───────────────────┬────────────────────────────────────────────────────┘
                     │ Structured RCA Report (Root Cause, Evidence, Actions)
 ┌───────────────────▼────────────────────────────────────────────────────┐
@@ -128,7 +128,7 @@ flowchart LR
 
 | 실패 분류 | 세부 원인 및 예시 | 표적 개선 방안 |
 | :--- | :--- | :--- |
-| **정보 부족 (Information Gap)** | 파드 재시작으로 이전 로그 유실, 분산 트레이스 부재, 설정/배포 변경 이력 부재 | **Loki/Alloy 중앙 로그 보존**, Tempo 분산 트레이싱 연동 |
+| **정보 부족 (Information Gap)** | 파드 재시작으로 이전 로그 유실, 분산 트레이스 부재, 설정/배포 변경 이력 부재 | 실패 원인에 따른 **중앙 로그 수집기 및 분산 트레이싱 등 선별 도입** |
 | **조회 실패 (Retrieval Failure)** | 권한 부족, 잘못된 시간 범위(Time window) 쿼리, 네임스페이스/라벨 불일치 | 쿼리 가이드라인 및 도구 파라미터 최적화 |
 | **해석·추론 실패 (Reasoning Failure)** | 필요한 증거는 수집했으나 상관관계를 인과관계로 오판, 서비스 의존성 오해 | **마이크로서비스 의존성 런북(Runbooks)** 가이드 주입 |
 | **실행 실패 (Execution Failure)** | 에이전트 도구 호출 문법 에러, 타임아웃, 출력 포맷 불일치 | 시스템 프롬프트 및 스키마 검증 보완 |
@@ -147,10 +147,10 @@ flowchart LR
 * 고정된 반복 횟수를 단정하지 않고, **예비 실험을 통해 지표 변동성(분산)을 확인한 뒤 통계적으로 유의미한 표본 수를 결정**합니다.
 * 최종 결과는 단순 평균값뿐만 아니라 **표준편차와 변동성을 함께 보고**합니다.
 
-### 3) 3대 단계적 검증 계획
-* **[검증 1] 중앙 집중형 로그(Loki) 도입의 효과:** `기본 파드 로그(kubectl logs)` 단독 환경 vs `중앙 장기 보존 및 레이블 검색(Loki)` 연동 환경 비교
-* **[검증 2] 분산 트레이싱(Tempo) 연동의 효과:** 연쇄 지연 및 다운스트림 병목 장애에서 분산 트레이스 제공 유무에 따른 정확도 및 TTD 비교
-* **[검증 3] MSA 의존성 런북(Runbooks) 주입의 효과:** 무작위 탐색 방지를 위한 서비스 토폴로지 가이드 제공 유무에 따른 탐색 경로 및 진단 속도 비교
+### 3) 실패 분석에 따른 표적 개선 가설 (예시)
+* **[가설 1] 로그 유실/과거 이력 부재로 실패한 경우:** `기본 파드 로그(kubectl logs)` 단독 환경 vs `중앙 집중형 로그 수집 도구` 연동 환경 비교
+* **[가설 2] 분산 서비스 간 연쇄 지연 추적에 실패한 경우:** 메트릭 단독 환경 vs `분산 트레이싱 도구` 연동 환경 비교
+* **[가설 3] 서비스 의존성 오판으로 엉뚱한 파드를 탐색한 경우:** 도구 단독 환경 vs `MSA 의존성 런북(Runbooks)` 주입 환경 비교
 
 ---
 
@@ -159,7 +159,7 @@ flowchart LR
 | 구분 | 도입 기술 | 역할 및 상세 |
 | :--- | :--- | :--- |
 | **Target Workload** | Google Online Boutique, Locust | 11개 마이크로서비스 워크로드 및 사용자 부하 생성기 |
-| **Observability** | Prometheus, Alertmanager, Grafana, Loki, Tempo | 메트릭, 중앙 집중형 로그, 분산 트레이스 풀스택 수집 |
+| **Observability** | Prometheus, Alertmanager | 기본 메트릭 수집 및 경보 인입 (실패 분석에 따라 모니터링 도구 단계적 추가 예정) |
 | **Investigation Engine** | **CNCF HolmesGPT**, Python | ReAct 자율 조사 루프 실행 및 클러스터 연동 (오픈소스 그대로 활용) |
 | **Domain Knowledge** | Markdown/YAML Runbooks | 마이크로서비스 의존성 토폴로지 및 운영 가이드 |
 | **Chaos & Benchmark** | Chaos Mesh, Python Benchmark Runner | 카오스 결함 주입 및 Ground Truth 기반 자동 평가 파이프라인 |
@@ -199,7 +199,7 @@ helm upgrade --install onlineboutique ./helm-chart \
 | **Phase 0: Baseline Infra** | • AWS EKS 인프라 프로비저닝 & Online Boutique 워크로드 구성<br>• 원클릭 클러스터 프로비저닝/삭제(IaC) 파이프라인 안정화 | **진행 중** |
 | **Phase 1: 장애·평가 파이프라인 구축** | • Prometheus 메트릭 수집 및 Alertmanager Webhook 연동<br>• HolmesGPT 기본 연동 (`kubectl` + Prometheus)<br>• Chaos Mesh 배포 및 Ground Truth 자동 평가 러너 초기 구현<br>• 탐색용/홀드아웃 장애 시나리오 사전 정의 | 진행 예정 |
 | **Phase 2: 기준 성능 측정 & 실패 분류** | • 기본 베이스라인 상태에서 탐색 세트 벤치마크 수행<br>• 4대 실패 범주(정보 부족, 조회 실패, 추론 실패, 실행 실패)에 따른 체계적 분류 | 예정 |
-| **Phase 3: 표적 개선 (Targeted Improvement)** | • 실패 분석에 따라 Loki(로그), Tempo(트레이스), 런북 단계적 연동<br>• 단일 변인 통제 환경에서 전후 비교 평가 및 지표 실측 | 예정 |
+| **Phase 3: 표적 개선 (Targeted Improvement)** | • 실패 분석 결과에 맞춰 필요한 모니터링 도구(중앙 로그, 분산 트레이스 등) 및 런북 단계적 연동<br>• 단일 변인 통제 환경에서 전후 비교 평가 및 지표 실측 | 예정 |
 | **Phase 4: 최종 평가 & 결과 종합 분석** | • 최종 확정 구성으로 검증용 홀드아웃 세트 평가 수행<br>• 표본 수 및 지표 변동성을 반영한 최종 벤치마크 통계 보고서 도출 | 예정 |
 
 ---
