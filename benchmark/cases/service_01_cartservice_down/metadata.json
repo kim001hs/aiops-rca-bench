@@ -1,0 +1,13 @@
+{
+  "case_id": "service_01_cartservice_down",
+  "category": "service",
+  "title": "Cartservice Replicas 0 (Service Down)",
+  "namespace": "onlineboutique",
+  "query": "There is a failure in the onlineboutique shopping mall. Users report that cart operations are failing. Check the pods and deployments in namespace 'onlineboutique' (e.g. using 'kubectl get pods -n onlineboutique' and 'kubectl get deployments -n onlineboutique') to find why cart operations fail. Identify the root cause component, fault type, and provide evidence.",
+  "ground_truth": {
+    "root_cause_component": "cartservice",
+    "fault_type": "Replica 0 / Pod Down",
+    "symptom_service": "cartservice",
+    "affected_services": ["frontend", "checkoutservice"]
+  }
+}
