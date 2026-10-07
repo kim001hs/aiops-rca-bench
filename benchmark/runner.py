@@ -315,18 +315,40 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float) -> dict
 
     # Ground Truth 비교
     gt = metadata.get("ground_truth", {})
-    target_comp = gt.get("component", "").lower()
-    target_fault = gt.get("fault_type", "").lower()
+    target_comp = (gt.get("root_cause_component") or gt.get("component") or "").strip().lower()
+    target_fault = (gt.get("fault_type") or "").strip().lower()
     keywords = gt.get("keywords", [])
+
+    # keywords가 명시되지 않은 경우, 핵심 필드로부터 기본 키워드 리스트 자동 유도
+    if not keywords:
+        derived = []
+        if target_comp:
+            derived.append(target_comp)
+        if target_fault:
+            derived.extend([word for word in target_fault.replace("/", " ").split() if len(word) > 2])
+        symptom = gt.get("symptom_service")
+        if symptom and symptom.lower() not in derived:
+            derived.append(symptom.lower())
+        keywords = derived
 
     text_lower = response_text.lower()
 
-    # 컴포넌트 정확도 (CA): 핵심 컴포넌트 언급 여부
-    ca = 1.0 if target_comp in text_lower else 0.0
+    # 컴포넌트 정확도 (CA): 핵심 컴포넌트 언급 여부 (빈 문자열 방어)
+    if not target_comp or not text_lower:
+        ca = 0.0
+    else:
+        ca = 1.0 if target_comp in text_lower else 0.0
 
-    # 결함 유형 정확도 (FA): 키워드 매칭 비율
-    matched_kw = [kw for kw in keywords if kw.lower() in text_lower]
-    fa = 1.0 if (len(matched_kw) >= 2 or target_fault in text_lower) else (len(matched_kw) / max(len(keywords), 1))
+    # 결함 유형 정확도 (FA): 키워드 매칭 비율 및 결함 유형 명시 여부
+    matched_kw = [kw for kw in keywords if kw.lower() in text_lower] if text_lower else []
+    if not text_lower or not keywords:
+        fa = 0.0
+    elif target_fault and target_fault in text_lower:
+        fa = 1.0
+    elif len(matched_kw) >= 2:
+        fa = 1.0
+    else:
+        fa = len(matched_kw) / max(len(keywords), 1)
     fa = round(min(fa, 1.0), 2)
 
     # 결합 진단 정확도 (JRA): CA와 FA가 모두 완벽할 때만 1.0
