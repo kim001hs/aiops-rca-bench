@@ -2,7 +2,7 @@
   "Run ID": "run_baseline_rescore",
   "Case ID": "service_01_cartservice_down",
   "Title": "Cartservice Replicas 0 (Service Down)",
-  "Timestamp": "2026-10-07T14:11:54.245011",
+  "Timestamp": "2026-10-07T15:34:13.691884",
   "CA (Component Accuracy)": 1.0,
   "FA (Fault Type Accuracy)": 1.0,
   "JRA (Joint Root-Cause Accuracy)": 1.0,
@@ -28,5 +28,7 @@
     "kubernetes_tabular_query",
     "fetch_pod_logs"
   ],
+  "Holmes_Returncode": 0,
+  "Cleanup_Success": true,
   "Status": "PASS"
 }

@@ -172,12 +172,17 @@ def run_case_script(case_dir: Path, base_name: str) -> subprocess.CompletedProce
     )
 
 
-def check_frontend_http(namespace: str = "onlineboutique", timeout: int = 15) -> bool:
-    """frontend 서비스 포트포워딩을 통해 실제 HTTP 200 정상 응답 여부 검증"""
+def check_frontend_health(namespace: str = "onlineboutique", timeout: int = 15, require_cart: bool = True) -> tuple[bool, str]:
+    """
+    frontend 서비스 포트포워딩을 통해:
+    1) /_healthz (프로세스 생존 여부)
+    2) /cart (cartservice gRPC 백엔드 통신 정상 여부)
+    두 가지 엔드포인트를 모두 검증하여 실제 비즈니스 기능 정상 동작을 판정
+    """
     import socket
     import urllib.request
+    import urllib.error
 
-    # 사용 가능한 로컬 임시 포트 탐색
     try:
         with socket.socket() as s:
             s.bind(("", 0))
@@ -185,26 +190,56 @@ def check_frontend_http(namespace: str = "onlineboutique", timeout: int = 15) ->
     except Exception:
         local_port = 8085
 
-    # kubectl port-forward svc/frontend {local_port}:80 -n {namespace} 실행
     pf_cmd = ["kubectl", "port-forward", "svc/frontend", f"{local_port}:80", "-n", namespace]
     proc = subprocess.Popen(
         pf_cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
     try:
         start = time.time()
+        healthz_ok = False
+        cart_ok = not require_cart
+
         while time.time() - start < timeout:
-            for path in ["/_healthz", "/"]:
+            # 1. /_healthz 검증
+            if not healthz_ok:
                 try:
-                    req = urllib.request.Request(f"http://127.0.0.1:{local_port}{path}")
+                    req = urllib.request.Request(f"http://127.0.0.1:{local_port}/_healthz")
                     with urllib.request.urlopen(req, timeout=1.5) as resp:
                         if resp.status == 200:
-                            return True
+                            healthz_ok = True
+                except Exception:
+                    time.sleep(0.5)
+                    continue
+
+            # 2. /cart 검증 (cartservice gRPC 연동 확인)
+            if healthz_ok and require_cart and not cart_ok:
+                try:
+                    cart_req = urllib.request.Request(
+                        f"http://127.0.0.1:{local_port}/cart",
+                        headers={"Cookie": "shop_session-id=healthcheck-session-id"},
+                    )
+                    with urllib.request.urlopen(cart_req, timeout=2.0) as resp:
+                        if resp.status == 200:
+                            cart_ok = True
+                except urllib.error.HTTPError as e:
+                    # cartservice가 내려가 있으면 500 반환됨
+                    cart_ok = False
                 except Exception:
                     pass
+
+            if healthz_ok and cart_ok:
+                return True, "정상 (Healthz 및 Cart 기능 응답 200)"
+
             time.sleep(0.5)
-        return False
+
+        if not healthz_ok:
+            return False, "프론트엔드 /_healthz 응답 실패 (타임아웃)"
+        if not cart_ok:
+            return False, "장바구니(/cart) 엔드포인트 응답 실패 (cartservice 연동 비정상)"
+        return False, "엔드포인트 헬스체크 타임아웃"
     finally:
         try:
             proc.terminate()
@@ -217,37 +252,33 @@ def check_frontend_http(namespace: str = "onlineboutique", timeout: int = 15) ->
 
 
 def precheck_cluster(namespace: str) -> bool:
-    print(f"\n🔍 [1/5 Pre-check] 클러스터 정상 상태 및 헬스체크 검증 중... (namespace={namespace})")
+    print(f"\n🔍 [1/5 Pre-check] 클러스터 정상 상태 및 헬스체크 엄격 검증 중... (namespace={namespace})")
     # 1. 기본 API 서버 연결 및 파드 목록 확인
     res = run_cmd(f"kubectl get pods -n {namespace} --no-headers")
     if res.returncode != 0:
         print(f"❌ kubectl 연결 실패: {res.stderr.strip()}")
         return False
 
-    # 2. 모든 파드의 Ready 상태 대기 (최대 60초)
+    # 2. 모든 파드의 Ready 상태 대기 (최대 60초) - 실패 시 즉시 중단
     print("   ⏳ 모든 파드의 Ready 상태 검증 중 (kubectl wait Ready, timeout=60s)...")
     wait_res = run_cmd(f"kubectl wait --for=condition=Ready pods --all -n {namespace} --timeout=60s")
     if wait_res.returncode != 0:
-        print(f"⚠️ 일부 파드가 Ready 상태가 아니거나 대기 시간 초과: {wait_res.stderr.strip() or wait_res.stdout.strip()}")
+        print(f"❌ 파드 Ready 상태 검증 실패: {wait_res.stderr.strip() or wait_res.stdout.strip()}")
         run_res = run_cmd(f"kubectl get pods -n {namespace}")
         if run_res.stdout:
             print(f"   [현재 파드 상태]\n{run_res.stdout.strip()}")
-    else:
-        print("   ✅ 모든 워크로드 Pod Ready 상태 확인 완료.")
+        return False
+    print("   ✅ 모든 워크로드 Pod Ready 상태 확인 완료.")
 
-    # 3. 프론트엔드 엔드포인트 HTTP 200 검증
-    print("   🌐 프론트엔드 서비스 엔드포인트 HTTP 200 응답 확인 중...")
-    if check_frontend_http(namespace, timeout=10):
-        print("   ✅ 프론트엔드 서비스 HTTP 200 정상 응답 수신.")
-    else:
-        print("   ⚠️ 프론트엔드 직접 포트포워딩 HTTP 응답 대기 초과. Deployment 상태 추가 점검...")
-        rollout_res = run_cmd(f"kubectl rollout status deployment/frontend -n {namespace} --timeout=15s")
-        if rollout_res.returncode != 0:
-            print(f"❌ 프론트엔드 배포 비정상: {rollout_res.stderr.strip()}")
-            return False
-        print("   ✅ 프론트엔드 Deployment 롤아웃 정상 완료 상태 확인.")
+    # 3. 프론트엔드 및 장바구니 엔드포인트 HTTP 200 검증 - 실패 시 즉시 중단
+    print("   🌐 프론트엔드 및 장바구니(/cart) 엔드포인트 기능 검증 중...")
+    healthy, msg = check_frontend_health(namespace, timeout=15, require_cart=True)
+    if not healthy:
+        print(f"❌ 사전 기능 검증 실패: {msg}")
+        return False
+    print(f"   ✅ 서비스 헬스체크 성공: {msg}")
 
-    print("✅ 사전 클러스터 헬스체크 통과.")
+    print("✅ 사전 클러스터 헬스체크 전 항목 엄격 통과.")
     return True
 
 
@@ -263,10 +294,13 @@ def inject_fault(case_dir: Path) -> bool:
     return True
 
 
-def run_holmes(query: str, output_file: Path, model: str = None) -> float:
+def run_holmes(query: str, output_file: Path, model: str = None, timeout: int = 300) -> tuple[float, int]:
+    import threading
+
     print("\n🤖 [3/5 Autonomous Investigation] HolmesGPT 자율 조사 실행 중...", flush=True)
     print(f"   질의 내용: {query}", flush=True)
     print(f"   출력 저장 경로: {output_file}", flush=True)
+    print(f"   실행 제한 시간: {timeout}초", flush=True)
 
     # Holmes 모델 지정 (기본값: openai/gpt-4o-mini)
     selected_model = model or os.environ.get("MODEL") or "openai/gpt-4o-mini"
@@ -319,20 +353,47 @@ def run_holmes(query: str, output_file: Path, model: str = None) -> float:
         env=child_env,
     )
 
-    for line in iter(proc.stdout.readline, ""):
-        print(f"   [Holmes] {line}", end="", flush=True)
+    def stream_output(pipe):
+        try:
+            for line in iter(pipe.readline, ""):
+                print(f"   [Holmes] {line}", end="", flush=True)
+        except Exception:
+            pass
+        finally:
+            try:
+                pipe.close()
+            except Exception:
+                pass
 
-    proc.stdout.close()
-    returncode = proc.wait()
+    reader_thread = threading.Thread(target=stream_output, args=(proc.stdout,), daemon=True)
+    reader_thread.start()
+
+    timed_out = False
+    try:
+        returncode = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        print(f"\n⏱️ [Timeout Alert] Holmes 실행 제한 시간({timeout}초) 초과! 프로세스를 강제 종료(kill)합니다.", flush=True)
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        returncode = proc.wait()
+
     duration = round(time.time() - start_time, 2)
+    reader_thread.join(timeout=2.0)
 
-    if returncode != 0 and not output_file.exists():
-        print(f"⚠️ Holmes 실행 경고/에러: returncode={returncode}", flush=True)
+    if timed_out:
+        print(f"❌ Holmes 진단이 타임아웃({timeout}초)으로 중단되었습니다.", flush=True)
+        return duration, -999
 
-    return duration
+    if returncode != 0:
+        print(f"⚠️ Holmes 프로세스 비정상 종료 (exit code: {returncode})", flush=True)
+
+    return duration, returncode
 
 
-def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id: str = "") -> dict:
+def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id: str = "", holmes_returncode: int = 0) -> dict:
     print("\n📊 [4/5 Evaluation & Scoring] Ground Truth 기반 자동 채점 중...")
     if not output_file.exists():
         print(f"❌ 결과 파일 {output_file}이 생성되지 않았습니다.")
@@ -343,6 +404,7 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id:
             "FA": 0.0,
             "JRA": 0.0,
             "Status": "FAILED_NO_OUTPUT",
+            "Holmes_Returncode": holmes_returncode,
             "Duration_Seconds": duration,
         }
 
@@ -468,6 +530,14 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id:
     # 결합 진단 정확도 (JRA): CA와 FA가 모두 완벽할 때만 1.0
     jra = 1.0 if (ca == 1.0 and fa >= 0.8) else 0.0
 
+    status = "PASS" if jra == 1.0 else "PARTIAL/FAIL"
+    if holmes_returncode != 0:
+        if holmes_returncode == -999:
+            status = "FAILED_HOLMES_TIMEOUT"
+        else:
+            status = f"FAILED_HOLMES_EXIT_{holmes_returncode}"
+        jra = 0.0
+
     scorecard = {
         "Run ID": run_id or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         "Case ID": metadata.get("case_id"),
@@ -482,7 +552,9 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id:
         "Estimated Cost ($)": round(total_cost, 4),
         "Matched Keywords": matched_kw,
         "Tools Used": tools_used,
-        "Status": "PASS" if jra == 1.0 else "PARTIAL/FAIL",
+        "Holmes_Returncode": holmes_returncode,
+        "Cleanup_Success": None,
+        "Status": status,
     }
 
     print("=" * 60)
@@ -494,6 +566,8 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id:
     print(f" • 진단 소요 시간 (TTD)   : ⏱️  {duration}초")
     print(f" • 도구 호출 횟수 (Steps) : 🛠️  {steps}회")
     print(f" • API 토큰 / 비용       : 💰 {total_tokens:,} tokens / ${total_cost:.4f}")
+    if holmes_returncode != 0:
+        print(f" • Holmes 실행 상태       : ❌ 비정상 (code: {holmes_returncode})")
     if scorecard["Tools Used"]:
         print(" • 실행된 도구 목록:")
         for idx, tool in enumerate(scorecard["Tools Used"], 1):
@@ -504,7 +578,7 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id:
 
 
 def cleanup_fault(case_dir: Path, namespace: str = "onlineboutique") -> bool:
-    print("\n🛡️ [5/5 Cleanup & Recovery] 클러스터 정상 복구 중...")
+    print("\n🛡️ [5/5 Cleanup & Recovery] 클러스터 정상 복구 및 상태 엄격 검증 중...")
     res = run_case_script(case_dir, "cleanup")
     if res.stdout:
         print(res.stdout.strip())
@@ -512,15 +586,21 @@ def cleanup_fault(case_dir: Path, namespace: str = "onlineboutique") -> bool:
         print(f"❌ 복구 스크립트 실행 실패: {res.stderr.strip()}")
         return False
 
-    print("   ⏳ 복구 후 파드 안정화 및 Ready 상태 검증 중...")
+    print("   ⏳ 복구 후 파드 안정화 및 Ready 상태 검증 중 (timeout=60s)...")
     wait_res = run_cmd(f"kubectl wait --for=condition=Ready pods --all -n {namespace} --timeout=60s")
     if wait_res.returncode != 0:
-        print(f"⚠️ 사후 파드 Ready 검증 경고: {wait_res.stderr.strip() or wait_res.stdout.strip()}")
+        print(f"❌ 복구 후 파드 Ready 검증 실패: {wait_res.stderr.strip() or wait_res.stdout.strip()}")
+        return False
+    print("   ✅ 모든 워크로드 Pod Ready 상태 복구 확인.")
 
-    if check_frontend_http(namespace, timeout=10):
-        print("   ✅ 복구 후 프론트엔드 HTTP 200 정상 응답 수신 확인.")
+    print("   🌐 복구 후 프론트엔드 및 장바구니 기능 검증 중...")
+    healthy, msg = check_frontend_health(namespace, timeout=15, require_cart=True)
+    if not healthy:
+        print(f"❌ 복구 후 기능 검증 실패: {msg}")
+        return False
+    print(f"   ✅ 복구 후 서비스 헬스체크 성공: {msg}")
 
-    print("✅ 클러스터 원상 복구 및 상태 검증 완료.")
+    print("✅ 클러스터 원상 복구 및 기능 검증 전 항목 엄격 통과.")
     return True
 
 
@@ -547,6 +627,12 @@ def main():
         const="latest",
         default=None,
         help="새로운 E2E 진단을 실행하지 않고 기존 rca.json 파일을 재채점하여 스코어카드 갱신 (경로 생략 시 results/{case}_rca.json 사용)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="HolmesGPT 자율 조사 실행 타임아웃 초 (기본값: 300초)",
     )
     args = parser.parse_args()
 
@@ -586,7 +672,8 @@ def main():
             except Exception:
                 pass
 
-        scorecard = evaluate_results(metadata, rca_file, duration, run_id="run_baseline_rescore")
+        scorecard = evaluate_results(metadata, rca_file, duration, run_id="run_baseline_rescore", holmes_returncode=0)
+        scorecard["Cleanup_Success"] = True
         scorecard_path = results_dir / f"{case_id}_scorecard.json"
         with open(scorecard_path, "w", encoding="utf-8") as f:
             json.dump(scorecard, f, indent=2, ensure_ascii=False)
@@ -597,64 +684,52 @@ def main():
     print(f"🚀 [E2E Live Benchmark] 케이스 시작: {metadata.get('title')}")
     print("=" * 60)
 
-    # 1. Pre-check
+    # 1. Pre-check (엄격 검증: 실패 시 실행 즉시 중단)
     if not precheck_cluster(metadata.get("namespace", "onlineboutique")):
-        sys.exit(1)
-
-    # 2. Inject
-    if not inject_fault(case_dir):
-        print("❌ 장애 주입 실패로 인해 벤치마크를 중단합니다.")
+        print("❌ 사전 클러스터 헬스체크 실패로 인해 벤치마크를 중단합니다.")
         sys.exit(1)
 
     cleanup_success = False
     pipeline_error = None
+    fault_injected = False
+    scorecard = None
+    run_dir = None
+    run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     try:
-        # 3. Investigate
-        results_dir = project_root / "results"
-        results_dir.mkdir(exist_ok=True)
-        case_id = metadata.get("case_id")
+        # 2. Inject (try 블록 내부에서 보호하여 실패 시에도 cleanup 보장)
+        fault_injected = inject_fault(case_dir)
+        if not fault_injected:
+            raise RuntimeError("고의 장애 주입 스크립트 실행 실패")
 
-        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # 3. Investigate
         run_dir = results_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-
         output_file = run_dir / f"{case_id}_rca.json"
 
         # 이전 캐시 오염 방지: 만약 파일이 이미 존재하면 사전 삭제
         if output_file.exists():
             output_file.unlink()
 
-        duration = run_holmes(metadata.get("query"), output_file, model=args.model)
+        duration, holmes_returncode = run_holmes(
+            metadata.get("query"),
+            output_file,
+            model=args.model,
+            timeout=args.timeout,
+        )
 
         # 실행 완료 검증: Holmes 출력이 정상 생성되었는지 검증
         if not output_file.exists() or output_file.stat().st_size == 0:
             raise RuntimeError(f"Holmes 진단 결과 파일이 생성되지 않았거나 비어 있습니다: {output_file}")
 
         # 4. Evaluate & Scorecard
-        scorecard = evaluate_results(metadata, output_file, duration, run_id=run_id)
-
-        # 고유 격리 디렉터리에 스코어카드 저장
-        run_scorecard_path = run_dir / f"{case_id}_scorecard.json"
-        with open(run_scorecard_path, "w", encoding="utf-8") as f:
-            json.dump(scorecard, f, indent=2, ensure_ascii=False)
-
-        # 최신 결과 파일 갱신 (단일 최신 파일 호환성 유지)
-        latest_output_file = results_dir / f"{case_id}_rca.json"
-        latest_scorecard_path = results_dir / f"{case_id}_scorecard.json"
-        shutil.copyfile(output_file, latest_output_file)
-        shutil.copyfile(run_scorecard_path, latest_scorecard_path)
-
-        print(f"\n📁 격리 실행 결과 저장: {run_dir}")
-        print(f"📁 최신 채점 스코어카드 갱신: {latest_scorecard_path}")
-
-        # 히스토리 보존 (플랫 타임스탬프 파일도 호환 유지)
-        if not args.no_history:
-            hist_scorecard = results_dir / f"{case_id}_scorecard_{run_id}.json"
-            hist_rca = results_dir / f"{case_id}_rca_{run_id}.json"
-            shutil.copyfile(run_scorecard_path, hist_scorecard)
-            shutil.copyfile(output_file, hist_rca)
-            print(f"📜 시계열 히스토리 백업 완료: {hist_scorecard.name}")
+        scorecard = evaluate_results(
+            metadata,
+            output_file,
+            duration,
+            run_id=run_id,
+            holmes_returncode=holmes_returncode,
+        )
 
     except Exception as e:
         pipeline_error = e
@@ -663,18 +738,47 @@ def main():
         pipeline_error = KeyboardInterrupt("작업이 사용자에 의해 중단되었습니다.")
         print("\n⚠️ [Interrupt] 사용자에 의해 실행이 중단되었습니다. 긴급 복구를 시도합니다...", flush=True)
     finally:
-        # 5. Cleanup (어떤 상황에서도 클러스터 원상 복구 100% 보장)
+        # 5. Cleanup (장애 주입 시도 여부와 무관하게 100% 실행 및 엄격 상태 검증)
         target_ns = metadata.get("namespace", "onlineboutique") if "metadata" in locals() else "onlineboutique"
         cleanup_success = cleanup_fault(case_dir, namespace=target_ns)
         if not cleanup_success:
-            print("🚨 [CRITICAL ALERT] 클러스터 복구(Cleanup) 실패! 클러스터 상태를 즉시 수동 점검해야 합니다.", flush=True)
+            print("🚨 [CRITICAL ALERT] 클러스터 복구 및 검증 실패! 클러스터 상태를 즉시 수동 점검해야 합니다.", flush=True)
+
+        # scorecard 파일 갱신 및 저장
+        if scorecard is not None and run_dir is not None:
+            scorecard["Cleanup_Success"] = cleanup_success
+            if not cleanup_success:
+                scorecard["Status"] = "FAILED_CLEANUP"
+                scorecard["JRA (Joint Root-Cause Accuracy)"] = 0.0
+
+            run_scorecard_path = run_dir / f"{case_id}_scorecard.json"
+            with open(run_scorecard_path, "w", encoding="utf-8") as f:
+                json.dump(scorecard, f, indent=2, ensure_ascii=False)
+
+            # 최신 결과 파일 갱신
+            latest_output_file = results_dir / f"{case_id}_rca.json"
+            latest_scorecard_path = results_dir / f"{case_id}_scorecard.json"
+            if output_file.exists():
+                shutil.copyfile(output_file, latest_output_file)
+            shutil.copyfile(run_scorecard_path, latest_scorecard_path)
+
+            print(f"\n📁 격리 실행 결과 저장: {run_dir}")
+            print(f"📁 최신 채점 스코어카드 갱신: {latest_scorecard_path}")
+
+            if not args.no_history:
+                hist_scorecard = results_dir / f"{case_id}_scorecard_{run_id}.json"
+                hist_rca = results_dir / f"{case_id}_rca_{run_id}.json"
+                shutil.copyfile(run_scorecard_path, hist_scorecard)
+                if output_file.exists():
+                    shutil.copyfile(output_file, hist_rca)
+                print(f"📜 시계열 히스토리 백업 완료: {hist_scorecard.name}")
 
     if pipeline_error is not None:
         print(f"❌ 파이프라인 에러로 비정상 종료합니다: {pipeline_error}")
         sys.exit(1)
 
     if not cleanup_success:
-        print("❌ 복구 스크립트 실행 실패로 프로세스를 에러(Exit Code 1) 종료합니다.")
+        print("❌ 복구 스크립트 실행 또는 사후 검증 실패로 프로세스를 에러(Exit Code 1) 종료합니다.")
         sys.exit(1)
 
     print("\n🎉 모든 파이프라인(주입 ➡️ 진단 ➡️ 채점 ➡️ 복구) 1사이클 관통 완료!")
