@@ -731,8 +731,14 @@ def main():
     pipeline_error = None
     fault_injected = False
     scorecard = None
-    run_dir = None
     run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir = results_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output_file = run_dir / f"{case_id}_rca.json"
+
+    # 이전 캐시 오염 방지: 만약 파일이 이미 존재하면 사전 삭제
+    if output_file.exists():
+        output_file.unlink()
 
     try:
         # 2. Inject (try 블록 내부에서 보호하여 실패 시에도 cleanup 보장)
@@ -741,14 +747,6 @@ def main():
             raise RuntimeError("고의 장애 주입 스크립트 실행 실패")
 
         # 3. Investigate
-        run_dir = results_dir / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        output_file = run_dir / f"{case_id}_rca.json"
-
-        # 이전 캐시 오염 방지: 만약 파일이 이미 존재하면 사전 삭제
-        if output_file.exists():
-            output_file.unlink()
-
         duration, holmes_returncode = run_holmes(
             metadata.get("query"),
             output_file,
@@ -823,6 +821,10 @@ def main():
             latest_scorecard_path = results_dir / f"{case_id}_scorecard.json"
             if output_file.exists():
                 shutil.copyfile(output_file, latest_output_file)
+            else:
+                # 이번 실행에서 출력이 없으면 과거의 낡은 최신 RCA를 제거하여 스코어카드와 상태 불일치 방지
+                if latest_output_file.exists():
+                    latest_output_file.unlink()
             shutil.copyfile(run_scorecard_path, latest_scorecard_path)
 
             print(f"\n📁 실행 결과 및 스코어카드 저장: {run_dir}")
