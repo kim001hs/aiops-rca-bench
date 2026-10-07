@@ -284,32 +284,70 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float) -> dict
             rca_data = {}
 
     # Holmes 출력 분석
+    # 1) 최종 진단 리포트 텍스트 추출 (messages 배열의 마지막 assistant 메시지 우선 탐색)
     response_text = ""
-    sections = rca_data.get("sections", [])
-    for sec in sections:
-        content = sec.get("content", "")
-        if isinstance(content, str):
-            response_text += content + "\n"
+    messages = rca_data.get("messages", [])
+    if isinstance(messages, list):
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
+                response_text = str(msg.get("content"))
+                break
 
-    # 도구 호출 및 토큰 사용량 집계
-    steps = 0
+    # fallback: 구버전 sections, response, answer 필드 호환
+    if not response_text:
+        sections = rca_data.get("sections", [])
+        if isinstance(sections, list):
+            for sec in sections:
+                if isinstance(sec, dict):
+                    content = sec.get("content", "")
+                    if isinstance(content, str):
+                        response_text += content + "\n"
+        if not response_text:
+            response_text = str(rca_data.get("response") or rca_data.get("answer") or "")
+
+    # 2) 도구 호출(Tool Calls) 및 스텝 수 집계
+    tool_calls = rca_data.get("tool_calls", [])
+    if not isinstance(tool_calls, list) or len(tool_calls) == 0:
+        # 구버전 호환: sections에서 tool_call 탐색
+        sections = rca_data.get("sections", [])
+        if isinstance(sections, list):
+            tool_calls = [
+                sec for sec in sections
+                if isinstance(sec, dict) and (sec.get("type") == "tool_call" or "tool_call" in sec)
+            ]
+
+    steps = len(tool_calls)
     tools_used = []
-    total_tokens = 0
-    total_cost = 0.0
-
-    # 1) tool_calls 및 token_usages 집계
-    for item in sections:
-        if item.get("type") == "tool_call" or "tool_call" in item:
-            steps += 1
+    for item in tool_calls:
+        if isinstance(item, dict):
             tool_name = item.get("tool_name") or item.get("name") or "unknown_tool"
             tools_used.append(tool_name)
 
-    # 2) rca_data 메타데이터에서 토큰/비용 파싱
-    usage = rca_data.get("token_usage", {}) or rca_data.get("usage", {})
-    if usage:
-        total_tokens = usage.get("total_tokens", 0)
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", 0)
+    # 3) 토큰 사용량 및 비용 파싱 (최상위 필드 우선, metadata/usage 폴백)
+    total_tokens = rca_data.get("total_tokens")
+    total_cost = rca_data.get("total_cost")
+    prompt_tokens = rca_data.get("prompt_tokens", 0)
+    completion_tokens = rca_data.get("completion_tokens", 0)
+
+    # 최상위 필드가 누락된 경우 metadata.costs 또는 usage 객체 순회
+    if total_tokens is None or total_cost is None:
+        meta_costs = rca_data.get("metadata", {}).get("costs", {})
+        usage = rca_data.get("metadata", {}).get("usage", {}) or rca_data.get("token_usage", {}) or rca_data.get("usage", {})
+
+        if total_tokens is None:
+            total_tokens = meta_costs.get("total_tokens") or usage.get("total_tokens", 0)
+        if total_cost is None:
+            total_cost = meta_costs.get("total_cost")
+
+        if not prompt_tokens:
+            prompt_tokens = meta_costs.get("prompt_tokens") or usage.get("prompt_tokens", 0)
+        if not completion_tokens:
+            completion_tokens = meta_costs.get("completion_tokens") or usage.get("completion_tokens", 0)
+
+    total_tokens = int(total_tokens or 0)
+    if total_cost is not None:
+        total_cost = float(total_cost)
+    else:
         # GPT-4o 기준 단가 ($2.5/1M in, $10.0/1M out)
         total_cost = (prompt_tokens * 2.5 / 1_000_000) + (completion_tokens * 10.0 / 1_000_000)
 
