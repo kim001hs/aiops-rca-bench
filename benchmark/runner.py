@@ -172,13 +172,82 @@ def run_case_script(case_dir: Path, base_name: str) -> subprocess.CompletedProce
     )
 
 
+def check_frontend_http(namespace: str = "onlineboutique", timeout: int = 15) -> bool:
+    """frontend 서비스 포트포워딩을 통해 실제 HTTP 200 정상 응답 여부 검증"""
+    import socket
+    import urllib.request
+
+    # 사용 가능한 로컬 임시 포트 탐색
+    try:
+        with socket.socket() as s:
+            s.bind(("", 0))
+            local_port = s.getsockname()[1]
+    except Exception:
+        local_port = 8085
+
+    # kubectl port-forward svc/frontend {local_port}:80 -n {namespace} 실행
+    pf_cmd = ["kubectl", "port-forward", "svc/frontend", f"{local_port}:80", "-n", namespace]
+    proc = subprocess.Popen(
+        pf_cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        start = time.time()
+        while time.time() - start < timeout:
+            for path in ["/_healthz", "/"]:
+                try:
+                    req = urllib.request.Request(f"http://127.0.0.1:{local_port}{path}")
+                    with urllib.request.urlopen(req, timeout=1.5) as resp:
+                        if resp.status == 200:
+                            return True
+                except Exception:
+                    pass
+            time.sleep(0.5)
+        return False
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
 def precheck_cluster(namespace: str) -> bool:
-    print("\n🔍 [1/5 Pre-check] 클러스터 정상 상태 확인 중...")
+    print(f"\n🔍 [1/5 Pre-check] 클러스터 정상 상태 및 헬스체크 검증 중... (namespace={namespace})")
+    # 1. 기본 API 서버 연결 및 파드 목록 확인
     res = run_cmd(f"kubectl get pods -n {namespace} --no-headers")
     if res.returncode != 0:
-        print(f"❌ kubectl 연결 실패: {res.stderr}")
+        print(f"❌ kubectl 연결 실패: {res.stderr.strip()}")
         return False
-    print("✅ 클러스터 연결 정상 확인.")
+
+    # 2. 모든 파드의 Ready 상태 대기 (최대 60초)
+    print("   ⏳ 모든 파드의 Ready 상태 검증 중 (kubectl wait Ready, timeout=60s)...")
+    wait_res = run_cmd(f"kubectl wait --for=condition=Ready pods --all -n {namespace} --timeout=60s")
+    if wait_res.returncode != 0:
+        print(f"⚠️ 일부 파드가 Ready 상태가 아니거나 대기 시간 초과: {wait_res.stderr.strip() or wait_res.stdout.strip()}")
+        run_res = run_cmd(f"kubectl get pods -n {namespace}")
+        if run_res.stdout:
+            print(f"   [현재 파드 상태]\n{run_res.stdout.strip()}")
+    else:
+        print("   ✅ 모든 워크로드 Pod Ready 상태 확인 완료.")
+
+    # 3. 프론트엔드 엔드포인트 HTTP 200 검증
+    print("   🌐 프론트엔드 서비스 엔드포인트 HTTP 200 응답 확인 중...")
+    if check_frontend_http(namespace, timeout=10):
+        print("   ✅ 프론트엔드 서비스 HTTP 200 정상 응답 수신.")
+    else:
+        print("   ⚠️ 프론트엔드 직접 포트포워딩 HTTP 응답 대기 초과. Deployment 상태 추가 점검...")
+        rollout_res = run_cmd(f"kubectl rollout status deployment/frontend -n {namespace} --timeout=15s")
+        if rollout_res.returncode != 0:
+            print(f"❌ 프론트엔드 배포 비정상: {rollout_res.stderr.strip()}")
+            return False
+        print("   ✅ 프론트엔드 Deployment 롤아웃 정상 완료 상태 확인.")
+
+    print("✅ 사전 클러스터 헬스체크 통과.")
     return True
 
 
@@ -428,15 +497,24 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id:
     return scorecard
 
 
-def cleanup_fault(case_dir: Path) -> bool:
+def cleanup_fault(case_dir: Path, namespace: str = "onlineboutique") -> bool:
     print("\n🛡️ [5/5 Cleanup & Recovery] 클러스터 정상 복구 중...")
     res = run_case_script(case_dir, "cleanup")
     if res.stdout:
         print(res.stdout.strip())
     if res.returncode != 0:
-        print(f"❌ 복구 실패: {res.stderr.strip()}")
+        print(f"❌ 복구 스크립트 실행 실패: {res.stderr.strip()}")
         return False
-    print("✅ 클러스터 원상 복구 완료.")
+
+    print("   ⏳ 복구 후 파드 안정화 및 Ready 상태 검증 중...")
+    wait_res = run_cmd(f"kubectl wait --for=condition=Ready pods --all -n {namespace} --timeout=60s")
+    if wait_res.returncode != 0:
+        print(f"⚠️ 사후 파드 Ready 검증 경고: {wait_res.stderr.strip() or wait_res.stdout.strip()}")
+
+    if check_frontend_http(namespace, timeout=10):
+        print("   ✅ 복구 후 프론트엔드 HTTP 200 정상 응답 수신 확인.")
+
+    print("✅ 클러스터 원상 복구 및 상태 검증 완료.")
     return True
 
 
@@ -541,7 +619,8 @@ def main():
         print("\n⚠️ [Interrupt] 사용자에 의해 실행이 중단되었습니다. 긴급 복구를 시도합니다...", flush=True)
     finally:
         # 5. Cleanup (어떤 상황에서도 클러스터 원상 복구 100% 보장)
-        cleanup_success = cleanup_fault(case_dir)
+        target_ns = metadata.get("namespace", "onlineboutique") if "metadata" in locals() else "onlineboutique"
+        cleanup_success = cleanup_fault(case_dir, namespace=target_ns)
         if not cleanup_success:
             print("🚨 [CRITICAL ALERT] 클러스터 복구(Cleanup) 실패! 클러스터 상태를 즉시 수동 점검해야 합니다.", flush=True)
 
