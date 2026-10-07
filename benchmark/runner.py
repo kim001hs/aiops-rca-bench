@@ -268,8 +268,8 @@ def run_holmes(query: str, output_file: Path, model: str = None) -> float:
     print(f"   질의 내용: {query}", flush=True)
     print(f"   출력 저장 경로: {output_file}", flush=True)
 
-    # Holmes 모델 지정 (기본값: openai/gpt-4o)
-    selected_model = model or os.environ.get("MODEL") or "openai/gpt-4o"
+    # Holmes 모델 지정 (기본값: openai/gpt-4o-mini)
+    selected_model = model or os.environ.get("MODEL") or "openai/gpt-4o-mini"
     # provider 접두사(openai/, anthropic/ 등)가 누락된 경우 자동 보정
     if "/" not in selected_model:
         if selected_model.startswith("gpt-") or selected_model.startswith("o1") or selected_model.startswith("o3"):
@@ -418,8 +418,14 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id:
     if total_cost is not None:
         total_cost = float(total_cost)
     else:
-        # GPT-4o 기준 단가 ($2.5/1M in, $10.0/1M out)
-        total_cost = (prompt_tokens * 2.5 / 1_000_000) + (completion_tokens * 10.0 / 1_000_000)
+        # 모델별 단가 자동 적용
+        active_model = os.environ.get("MODEL", "").lower()
+        if "mini" in active_model or "flash" in active_model or "haiku" in active_model:
+            # GPT-4o-mini 기준 단가 ($0.15/1M in, $0.60/1M out)
+            total_cost = (prompt_tokens * 0.15 / 1_000_000) + (completion_tokens * 0.60 / 1_000_000)
+        else:
+            # GPT-4o 기준 단가 ($2.5/1M in, $10.0/1M out)
+            total_cost = (prompt_tokens * 2.5 / 1_000_000) + (completion_tokens * 10.0 / 1_000_000)
 
     # Ground Truth 비교
     gt = metadata.get("ground_truth", {})
@@ -528,7 +534,7 @@ def main():
     parser.add_argument(
         "--model",
         default=None,
-        help="HolmesGPT가 사용할 LLM 모델 (예: openai/gpt-4o, anthropic/claude-3-5-sonnet-20241022, 기본값: openai/gpt-4o)",
+        help="HolmesGPT가 사용할 LLM 모델 (예: openai/gpt-4o-mini, openai/gpt-4o, anthropic/claude-3-5-sonnet-20241022, 기본값: openai/gpt-4o-mini)",
     )
     parser.add_argument(
         "--no-history",
