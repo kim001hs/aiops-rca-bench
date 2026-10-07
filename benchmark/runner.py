@@ -263,11 +263,12 @@ def run_holmes(query: str, output_file: Path, model: str = None) -> float:
     return duration
 
 
-def evaluate_results(metadata: dict, output_file: Path, duration: float) -> dict:
+def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id: str = "") -> dict:
     print("\n📊 [4/5 Evaluation & Scoring] Ground Truth 기반 자동 채점 중...")
     if not output_file.exists():
         print(f"❌ 결과 파일 {output_file}이 생성되지 않았습니다.")
         return {
+            "Run ID": run_id or "unknown",
             "Case ID": metadata.get("case_id"),
             "CA": 0.0,
             "FA": 0.0,
@@ -393,6 +394,7 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float) -> dict
     jra = 1.0 if (ca == 1.0 and fa >= 0.8) else 0.0
 
     scorecard = {
+        "Run ID": run_id or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         "Case ID": metadata.get("case_id"),
         "Title": metadata.get("title"),
         "Timestamp": datetime.now().isoformat(),
@@ -489,27 +491,46 @@ def main():
         results_dir = project_root / "results"
         results_dir.mkdir(exist_ok=True)
         case_id = metadata.get("case_id")
-        output_file = results_dir / f"{case_id}_rca.json"
+
+        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        run_dir = results_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        output_file = run_dir / f"{case_id}_rca.json"
+
+        # 이전 캐시 오염 방지: 만약 파일이 이미 존재하면 사전 삭제
+        if output_file.exists():
+            output_file.unlink()
 
         duration = run_holmes(metadata.get("query"), output_file, model=args.model)
 
+        # 실행 완료 검증: Holmes 출력이 정상 생성되었는지 검증
+        if not output_file.exists() or output_file.stat().st_size == 0:
+            raise RuntimeError(f"Holmes 진단 결과 파일이 생성되지 않았거나 비어 있습니다: {output_file}")
+
         # 4. Evaluate & Scorecard
-        scorecard = evaluate_results(metadata, output_file, duration)
-        scorecard_path = results_dir / f"{case_id}_scorecard.json"
-        with open(scorecard_path, "w", encoding="utf-8") as f:
+        scorecard = evaluate_results(metadata, output_file, duration, run_id=run_id)
+
+        # 고유 격리 디렉터리에 스코어카드 저장
+        run_scorecard_path = run_dir / f"{case_id}_scorecard.json"
+        with open(run_scorecard_path, "w", encoding="utf-8") as f:
             json.dump(scorecard, f, indent=2, ensure_ascii=False)
-        print(f"\n📁 최신 채점 스코어카드 저장: {scorecard_path}")
 
-        # 히스토리 보존 (시계열 분석을 위한 타임스탬프 파일 저장)
+        # 최신 결과 파일 갱신 (단일 최신 파일 호환성 유지)
+        latest_output_file = results_dir / f"{case_id}_rca.json"
+        latest_scorecard_path = results_dir / f"{case_id}_scorecard.json"
+        shutil.copyfile(output_file, latest_output_file)
+        shutil.copyfile(run_scorecard_path, latest_scorecard_path)
+
+        print(f"\n📁 격리 실행 결과 저장: {run_dir}")
+        print(f"📁 최신 채점 스코어카드 갱신: {latest_scorecard_path}")
+
+        # 히스토리 보존 (플랫 타임스탬프 파일도 호환 유지)
         if not args.no_history:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            hist_scorecard = results_dir / f"{case_id}_scorecard_{ts}.json"
-            with open(hist_scorecard, "w", encoding="utf-8") as f:
-                json.dump(scorecard, f, indent=2, ensure_ascii=False)
-
-            if output_file.exists():
-                hist_rca = results_dir / f"{case_id}_rca_{ts}.json"
-                shutil.copyfile(output_file, hist_rca)
+            hist_scorecard = results_dir / f"{case_id}_scorecard_{run_id}.json"
+            hist_rca = results_dir / f"{case_id}_rca_{run_id}.json"
+            shutil.copyfile(run_scorecard_path, hist_scorecard)
+            shutil.copyfile(output_file, hist_rca)
             print(f"📜 시계열 히스토리 백업 완료: {hist_scorecard.name}")
 
     except Exception as e:
