@@ -478,37 +478,59 @@ def main():
 
     # 2. Inject
     if not inject_fault(case_dir):
+        print("❌ 장애 주입 실패로 인해 벤치마크를 중단합니다.")
         sys.exit(1)
 
-    # 3. Investigate
-    results_dir = project_root / "results"
-    results_dir.mkdir(exist_ok=True)
-    case_id = metadata.get("case_id")
-    output_file = results_dir / f"{case_id}_rca.json"
+    cleanup_success = False
+    pipeline_error = None
 
-    duration = run_holmes(metadata.get("query"), output_file, model=args.model)
+    try:
+        # 3. Investigate
+        results_dir = project_root / "results"
+        results_dir.mkdir(exist_ok=True)
+        case_id = metadata.get("case_id")
+        output_file = results_dir / f"{case_id}_rca.json"
 
-    # 4. Evaluate & Scorecard
-    scorecard = evaluate_results(metadata, output_file, duration)
-    scorecard_path = results_dir / f"{case_id}_scorecard.json"
-    with open(scorecard_path, "w", encoding="utf-8") as f:
-        json.dump(scorecard, f, indent=2, ensure_ascii=False)
-    print(f"\n📁 최신 채점 스코어카드 저장: {scorecard_path}")
+        duration = run_holmes(metadata.get("query"), output_file, model=args.model)
 
-    # 히스토리 보존 (시계열 분석을 위한 타임스탬프 파일 저장)
-    if not args.no_history:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        hist_scorecard = results_dir / f"{case_id}_scorecard_{ts}.json"
-        with open(hist_scorecard, "w", encoding="utf-8") as f:
+        # 4. Evaluate & Scorecard
+        scorecard = evaluate_results(metadata, output_file, duration)
+        scorecard_path = results_dir / f"{case_id}_scorecard.json"
+        with open(scorecard_path, "w", encoding="utf-8") as f:
             json.dump(scorecard, f, indent=2, ensure_ascii=False)
+        print(f"\n📁 최신 채점 스코어카드 저장: {scorecard_path}")
 
-        if output_file.exists():
-            hist_rca = results_dir / f"{case_id}_rca_{ts}.json"
-            shutil.copyfile(output_file, hist_rca)
-        print(f"📜 시계열 히스토리 백업 완료: {hist_scorecard.name}")
+        # 히스토리 보존 (시계열 분석을 위한 타임스탬프 파일 저장)
+        if not args.no_history:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            hist_scorecard = results_dir / f"{case_id}_scorecard_{ts}.json"
+            with open(hist_scorecard, "w", encoding="utf-8") as f:
+                json.dump(scorecard, f, indent=2, ensure_ascii=False)
 
-    # 5. Cleanup
-    cleanup_fault(case_dir)
+            if output_file.exists():
+                hist_rca = results_dir / f"{case_id}_rca_{ts}.json"
+                shutil.copyfile(output_file, hist_rca)
+            print(f"📜 시계열 히스토리 백업 완료: {hist_scorecard.name}")
+
+    except Exception as e:
+        pipeline_error = e
+        print(f"\n💥 [Pipeline Error] 벤치마크 실행 중 예외 발생: {e}", flush=True)
+    except KeyboardInterrupt:
+        pipeline_error = KeyboardInterrupt("작업이 사용자에 의해 중단되었습니다.")
+        print("\n⚠️ [Interrupt] 사용자에 의해 실행이 중단되었습니다. 긴급 복구를 시도합니다...", flush=True)
+    finally:
+        # 5. Cleanup (어떤 상황에서도 클러스터 원상 복구 100% 보장)
+        cleanup_success = cleanup_fault(case_dir)
+        if not cleanup_success:
+            print("🚨 [CRITICAL ALERT] 클러스터 복구(Cleanup) 실패! 클러스터 상태를 즉시 수동 점검해야 합니다.", flush=True)
+
+    if pipeline_error is not None:
+        print(f"❌ 파이프라인 에러로 비정상 종료합니다: {pipeline_error}")
+        sys.exit(1)
+
+    if not cleanup_success:
+        print("❌ 복구 스크립트 실행 실패로 프로세스를 에러(Exit Code 1) 종료합니다.")
+        sys.exit(1)
 
     print("\n🎉 모든 파이프라인(주입 ➡️ 진단 ➡️ 채점 ➡️ 복구) 1사이클 관통 완료!")
 
