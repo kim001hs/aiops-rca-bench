@@ -294,7 +294,11 @@ def inject_fault(case_dir: Path) -> bool:
     return True
 
 
+CURRENT_HOLMES_PROC = None
+
+
 def run_holmes(query: str, output_file: Path, model: str = None, timeout: int = 300) -> tuple[float, int]:
+    global CURRENT_HOLMES_PROC
     import threading
 
     print("\n🤖 [3/5 Autonomous Investigation] HolmesGPT 자율 조사 실행 중...", flush=True)
@@ -352,6 +356,7 @@ def run_holmes(query: str, output_file: Path, model: str = None, timeout: int = 
         errors="replace",
         env=child_env,
     )
+    CURRENT_HOLMES_PROC = proc
 
     def stream_output(pipe):
         try:
@@ -379,6 +384,16 @@ def run_holmes(query: str, output_file: Path, model: str = None, timeout: int = 
         except Exception:
             pass
         returncode = proc.wait()
+    except KeyboardInterrupt:
+        print("\n⚠️ [Interrupt Alert] 진단 중 인터럽트 발생! Holmes 프로세스를 강제 종료(kill)합니다.", flush=True)
+        try:
+            proc.kill()
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+        raise
+    finally:
+        CURRENT_HOLMES_PROC = None
 
     duration = round(time.time() - start_time, 2)
     reader_thread.join(timeout=2.0)
@@ -393,19 +408,30 @@ def run_holmes(query: str, output_file: Path, model: str = None, timeout: int = 
     return duration, returncode
 
 
-def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id: str = "", holmes_returncode: int = 0) -> dict:
+def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id: str = "", holmes_returncode: int = None) -> dict:
     print("\n📊 [4/5 Evaluation & Scoring] Ground Truth 기반 자동 채점 중...")
-    if not output_file.exists():
-        print(f"❌ 결과 파일 {output_file}이 생성되지 않았습니다.")
+    if not output_file.exists() or output_file.stat().st_size == 0:
+        print(f"❌ 결과 파일 {output_file}이 생성되지 않았거나 비어 있습니다.")
+        status = "FAILED_NO_OUTPUT"
+        if holmes_returncode is not None and holmes_returncode != 0:
+            status = "FAILED_HOLMES_TIMEOUT" if holmes_returncode == -999 else f"FAILED_HOLMES_EXIT_{holmes_returncode}"
         return {
-            "Run ID": run_id or "unknown",
+            "Run ID": run_id or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             "Case ID": metadata.get("case_id"),
-            "CA": 0.0,
-            "FA": 0.0,
-            "JRA": 0.0,
-            "Status": "FAILED_NO_OUTPUT",
+            "Title": metadata.get("title"),
+            "Timestamp": datetime.now().isoformat(),
+            "CA (Component Accuracy)": 0.0,
+            "FA (Fault Type Accuracy)": 0.0,
+            "JRA (Joint Root-Cause Accuracy)": 0.0,
+            "TTD (Time To Diagnose, sec)": duration,
+            "Steps (Tool Calls)": 0,
+            "Total Tokens": 0,
+            "Estimated Cost ($)": 0.0,
+            "Matched Keywords": [],
+            "Tools Used": [],
             "Holmes_Returncode": holmes_returncode,
-            "Duration_Seconds": duration,
+            "Cleanup_Success": None,
+            "Status": status,
         }
 
     with open(output_file, "r", encoding="utf-8") as f:
@@ -531,7 +557,7 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id:
     jra = 1.0 if (ca == 1.0 and fa >= 0.8) else 0.0
 
     status = "PASS" if jra == 1.0 else "PARTIAL/FAIL"
-    if holmes_returncode != 0:
+    if holmes_returncode is not None and holmes_returncode != 0:
         if holmes_returncode == -999:
             status = "FAILED_HOLMES_TIMEOUT"
         else:
@@ -566,7 +592,7 @@ def evaluate_results(metadata: dict, output_file: Path, duration: float, run_id:
     print(f" • 진단 소요 시간 (TTD)   : ⏱️  {duration}초")
     print(f" • 도구 호출 횟수 (Steps) : 🛠️  {steps}회")
     print(f" • API 토큰 / 비용       : 💰 {total_tokens:,} tokens / ${total_cost:.4f}")
-    if holmes_returncode != 0:
+    if holmes_returncode is not None and holmes_returncode != 0:
         print(f" • Holmes 실행 상태       : ❌ 비정상 (code: {holmes_returncode})")
     if scorecard["Tools Used"]:
         print(" • 실행된 도구 목록:")
@@ -663,17 +689,29 @@ def main():
 
         print(f"\n🔄 [Re-scoring Mode] 기존 RCA 파일 재채점 수행: {rca_file.name}")
         duration = 0.0
+        old_cleanup = None
+        old_returncode = None
         old_scorecard = results_dir / f"{case_id}_scorecard.json"
         if old_scorecard.exists():
             try:
                 with open(old_scorecard, "r", encoding="utf-8") as f:
                     sc = json.load(f)
                     duration = float(sc.get("TTD (Time To Diagnose, sec)") or sc.get("TTD (소요 시간 초)") or 0.0)
+                    old_cleanup = sc.get("Cleanup_Success")
+                    old_returncode = sc.get("Holmes_Returncode")
             except Exception:
                 pass
 
-        scorecard = evaluate_results(metadata, rca_file, duration, run_id="run_baseline_rescore", holmes_returncode=0)
-        scorecard["Cleanup_Success"] = True
+        scorecard = evaluate_results(
+            metadata,
+            rca_file,
+            duration,
+            run_id="run_baseline_rescore",
+            holmes_returncode=None,
+        )
+        # 오프라인 재채점에서는 복구/실행을 직접 검증하지 않으므로 null로 유지
+        scorecard["Cleanup_Success"] = None
+        scorecard["Holmes_Returncode"] = None
         scorecard_path = results_dir / f"{case_id}_scorecard.json"
         with open(scorecard_path, "w", encoding="utf-8") as f:
             json.dump(scorecard, f, indent=2, ensure_ascii=False)
@@ -718,11 +756,7 @@ def main():
             timeout=args.timeout,
         )
 
-        # 실행 완료 검증: Holmes 출력이 정상 생성되었는지 검증
-        if not output_file.exists() or output_file.stat().st_size == 0:
-            raise RuntimeError(f"Holmes 진단 결과 파일이 생성되지 않았거나 비어 있습니다: {output_file}")
-
-        # 4. Evaluate & Scorecard
+        # 4. Evaluate & Scorecard (출력 파일 누락/비정상 종료 시에도 실패 스코어카드 저장)
         scorecard = evaluate_results(
             metadata,
             output_file,
@@ -736,17 +770,46 @@ def main():
         print(f"\n💥 [Pipeline Error] 벤치마크 실행 중 예외 발생: {e}", flush=True)
     except KeyboardInterrupt:
         pipeline_error = KeyboardInterrupt("작업이 사용자에 의해 중단되었습니다.")
-        print("\n⚠️ [Interrupt] 사용자에 의해 실행이 중단되었습니다. 긴급 복구를 시도합니다...", flush=True)
+        print("\n⚠️ [Interrupt] 사용자에 의해 실행이 중단되었습니다. 실행 중인 조사 프로세스를 정리하고 복구를 시도합니다...", flush=True)
+        if CURRENT_HOLMES_PROC and CURRENT_HOLMES_PROC.poll() is None:
+            try:
+                CURRENT_HOLMES_PROC.kill()
+                CURRENT_HOLMES_PROC.wait(timeout=2)
+                print("   ✅ 실행 중이던 Holmes 자식 프로세스 강제 종료 완료.", flush=True)
+            except Exception:
+                pass
     finally:
-        # 5. Cleanup (장애 주입 시도 여부와 무관하게 100% 실행 및 엄격 상태 검증)
+        # 5. Cleanup (장애 주입 시도 여부와 무관하게 실행 및 사후 상태 엄격 검증)
         target_ns = metadata.get("namespace", "onlineboutique") if "metadata" in locals() else "onlineboutique"
         cleanup_success = cleanup_fault(case_dir, namespace=target_ns)
         if not cleanup_success:
             print("🚨 [CRITICAL ALERT] 클러스터 복구 및 검증 실패! 클러스터 상태를 즉시 수동 점검해야 합니다.", flush=True)
 
-        # scorecard 파일 갱신 및 저장
-        if scorecard is not None and run_dir is not None:
-            scorecard["Cleanup_Success"] = cleanup_success
+        # scorecard 파일 갱신 및 저장 (실패 실행도 상태·시간·복구 결과를 파일로 보존)
+        if run_dir is not None:
+            if scorecard is None:
+                fail_status = "FAILED_INTERRUPT" if isinstance(pipeline_error, KeyboardInterrupt) else "FAILED_PIPELINE"
+                scorecard = {
+                    "Run ID": run_id,
+                    "Case ID": metadata.get("case_id"),
+                    "Title": metadata.get("title"),
+                    "Timestamp": datetime.now().isoformat(),
+                    "CA (Component Accuracy)": 0.0,
+                    "FA (Fault Type Accuracy)": 0.0,
+                    "JRA (Joint Root-Cause Accuracy)": 0.0,
+                    "TTD (Time To Diagnose, sec)": 0.0,
+                    "Steps (Tool Calls)": 0,
+                    "Total Tokens": 0,
+                    "Estimated Cost ($)": 0.0,
+                    "Matched Keywords": [],
+                    "Tools Used": [],
+                    "Holmes_Returncode": None,
+                    "Cleanup_Success": cleanup_success,
+                    "Status": fail_status,
+                }
+            else:
+                scorecard["Cleanup_Success"] = cleanup_success
+
             if not cleanup_success:
                 scorecard["Status"] = "FAILED_CLEANUP"
                 scorecard["JRA (Joint Root-Cause Accuracy)"] = 0.0
@@ -762,7 +825,7 @@ def main():
                 shutil.copyfile(output_file, latest_output_file)
             shutil.copyfile(run_scorecard_path, latest_scorecard_path)
 
-            print(f"\n📁 격리 실행 결과 저장: {run_dir}")
+            print(f"\n📁 실행 결과 및 스코어카드 저장: {run_dir}")
             print(f"📁 최신 채점 스코어카드 갱신: {latest_scorecard_path}")
 
             if not args.no_history:
@@ -773,15 +836,37 @@ def main():
                     shutil.copyfile(output_file, hist_rca)
                 print(f"📜 시계열 히스토리 백업 완료: {hist_scorecard.name}")
 
-    if pipeline_error is not None:
-        print(f"❌ 파이프라인 에러로 비정상 종료합니다: {pipeline_error}")
+    # 벤치마크 최종 합격 판정 (진단 성공 + 복구 성공 + 에러 없음)
+    is_benchmark_passed = (
+        pipeline_error is None
+        and cleanup_success
+        and scorecard is not None
+        and scorecard.get("Status") == "PASS"
+        and scorecard.get("Holmes_Returncode") == 0
+    )
+
+    if not is_benchmark_passed:
+        failed_reasons = []
+        if pipeline_error is not None:
+            failed_reasons.append(f"파이프라인 예외 발생 ({pipeline_error})")
+        if scorecard is None:
+            failed_reasons.append("스코어카드 미생성")
+        else:
+            if scorecard.get("Holmes_Returncode") not in (0, None):
+                failed_reasons.append(f"Holmes 비정상 종료 (Returncode: {scorecard.get('Holmes_Returncode')})")
+            if scorecard.get("Status") != "PASS":
+                failed_reasons.append(f"진단 판정 미통과 (Status: {scorecard.get('Status')})")
+        if not cleanup_success:
+            failed_reasons.append("클러스터 복구 또는 사후 검증 실패")
+
+        print("\n" + "=" * 60)
+        print("❌ [Benchmark Result] 벤치마크 테스트 미통과 / 실패:")
+        for r in failed_reasons:
+            print(f" • {r}")
+        print("=" * 60)
         sys.exit(1)
 
-    if not cleanup_success:
-        print("❌ 복구 스크립트 실행 또는 사후 검증 실패로 프로세스를 에러(Exit Code 1) 종료합니다.")
-        sys.exit(1)
-
-    print("\n🎉 모든 파이프라인(주입 ➡️ 진단 ➡️ 채점 ➡️ 복구) 1사이클 관통 완료!")
+    print("\n🎉 모든 파이프라인(주입 ➡️ 진단 ➡️ 채점 ➡️ 복구) 1사이클 정상 관통 완료!")
 
 
 if __name__ == "__main__":
