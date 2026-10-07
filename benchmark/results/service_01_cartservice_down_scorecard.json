@@ -1,24 +1,32 @@
 {
-  "case_id": "service_01_cartservice_down",
-  "timestamp": "2026-10-05T18:33:38.169194",
-  "CA (컴포넌트 정확도)": 1.0,
-  "FA (장애유형 정확도)": 1.0,
-  "JRA (결합 진단 정확도)": 1.0,
-  "Steps (도구 호출 수)": 11,
-  "TTD (소요 시간 초)": 123.9,
-  "Total Cost ($)": 0.11192750000000001,
+  "Run ID": "run_baseline_rescore",
+  "Case ID": "service_01_cartservice_down",
+  "Title": "Cartservice Replicas 0 (Service Down)",
+  "Timestamp": "2026-10-07T14:11:54.245011",
+  "CA (Component Accuracy)": 1.0,
+  "FA (Fault Type Accuracy)": 1.0,
+  "JRA (Joint Root-Cause Accuracy)": 1.0,
+  "TTD (Time To Diagnose, sec)": 123.9,
+  "Steps (Tool Calls)": 11,
   "Total Tokens": 81873,
+  "Estimated Cost ($)": 0.1119,
+  "Matched Keywords": [
+    "cartservice",
+    "replica",
+    "pod"
+  ],
   "Tools Used": [
-    "filter: kubectl get pods columns='NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName' filter=cart",
-    "filter: kubectl get deployments columns='NAME:.metadata.name,READY_REPLICAS:.status.readyReplicas,AVAILABLE_REPLICAS:.status.availableReplicas' filter=cart",
-    "kubectl run '<pod_name>' --image=busybox --namespace=onlineboutique --rm --attach --restart=Never -i -- nslookup redis-cart",
-    "jq query: kubectl get pods | jq ''.items[] | select(.metadata.name | test(\"cartservice\")) | {name: .metadata.name, status: .status.phase, node: .spec.nodeName}''",
-    "kubectl run '<pod_name>' --image=busybox --namespace=onlineboutique --rm --attach --restart=Never -i -- ping -c 3 redis-cart",
-    "kubectl run '<pod_name>' --image=busybox --namespace=onlineboutique --rm --attach --restart=Never -i -- ping -c 3 cartservice",
-    "kubectl run '<pod_name>' --image=busybox --namespace=onlineboutique --rm --attach --restart=Never -i -- nslookup cartservice",
-    "kubectl run '<pod_name>' --image=busybox --namespace=onlineboutique --rm --attach --restart=Never -i -- nslookup redis-cart",
-    "filter: kubectl get pods columns='NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName' filter=cartservice",
-    "filter: kubectl get pods columns='NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName' filter=redis-cart",
-    "Fetch Logs (pod=redis-cart-67bff9846c-gfr9n, namespace=onlineboutique)"
-  ]
+    "kubernetes_tabular_query",
+    "kubernetes_tabular_query",
+    "kubectl_run_image",
+    "kubernetes_jq_query",
+    "kubectl_run_image",
+    "kubectl_run_image",
+    "kubectl_run_image",
+    "kubectl_run_image",
+    "kubernetes_tabular_query",
+    "kubernetes_tabular_query",
+    "fetch_pod_logs"
+  ],
+  "Status": "PASS"
 }

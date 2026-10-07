@@ -535,6 +535,13 @@ def main():
         action="store_true",
         help="타임스탬프 히스토리 파일 저장을 비활성화하고 최신 결과 파일만 갱신",
     )
+    parser.add_argument(
+        "--rescore",
+        nargs="?",
+        const="latest",
+        default=None,
+        help="새로운 E2E 진단을 실행하지 않고 기존 rca.json 파일을 재채점하여 스코어카드 갱신 (경로 생략 시 results/{case}_rca.json 사용)",
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent
@@ -547,6 +554,38 @@ def main():
     metadata_path = case_dir / "metadata.json"
     with open(metadata_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
+
+    results_dir = project_root / "results"
+    results_dir.mkdir(exist_ok=True)
+    case_id = metadata.get("case_id")
+
+    # 오프라인 재채점 모드 (--rescore)
+    if args.rescore:
+        if args.rescore == "latest":
+            rca_file = results_dir / f"{case_id}_rca.json"
+        else:
+            rca_file = Path(args.rescore)
+        if not rca_file.exists():
+            print(f"❌ 재채점할 대상 RCA 파일을 찾을 수 없습니다: {rca_file}")
+            sys.exit(1)
+
+        print(f"\n🔄 [Re-scoring Mode] 기존 RCA 파일 재채점 수행: {rca_file.name}")
+        duration = 0.0
+        old_scorecard = results_dir / f"{case_id}_scorecard.json"
+        if old_scorecard.exists():
+            try:
+                with open(old_scorecard, "r", encoding="utf-8") as f:
+                    sc = json.load(f)
+                    duration = float(sc.get("TTD (Time To Diagnose, sec)") or sc.get("TTD (소요 시간 초)") or 0.0)
+            except Exception:
+                pass
+
+        scorecard = evaluate_results(metadata, rca_file, duration, run_id="run_baseline_rescore")
+        scorecard_path = results_dir / f"{case_id}_scorecard.json"
+        with open(scorecard_path, "w", encoding="utf-8") as f:
+            json.dump(scorecard, f, indent=2, ensure_ascii=False)
+        print(f"\n✅ 재채점 완료 및 스코어카드 저장: {scorecard_path}")
+        sys.exit(0)
 
     print("=" * 60)
     print(f"🚀 [E2E Live Benchmark] 케이스 시작: {metadata.get('title')}")
