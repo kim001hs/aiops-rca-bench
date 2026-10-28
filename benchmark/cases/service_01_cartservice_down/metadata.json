@@ -9,5 +9,25 @@
     "fault_type": "Replica 0 / Pod Down",
     "symptom_service": "cartservice",
     "affected_services": ["frontend", "checkoutservice"]
+  },
+  "evaluation_criteria": {
+    "target_component": "cartservice",
+    "target_fault_type": "Replica 0 / Pod Down",
+    "required_evidence": [
+      "deployment replicas is 0 or readyReplicas is 0",
+      "no running cartservice pod found"
+    ],
+    "negative_keywords": [
+      "redis-cart is down",
+      "network error",
+      "database connection failed"
+    ],
+    "scoring_dimensions": {
+      "CA": "100점: cartservice를 장애 근본 원인으로 지목 (부정문 언급 시 0점)",
+      "FA": "100점: 레플리카 0개 / 파드 미실행 상태를 정확히 진단 (0 or 100점)",
+      "EA": "100점: kubectl get deployments/pods 커맨드 및 0 ready 결과 인용 수준 (0~100점)",
+      "JRA": "100점: CA 100점 AND FA 100점 동시 충족 시 통과 (Pass 100점 / Fail 0점)",
+      "FalseAttribution": "0%: 정상 컴포넌트(redis, network 등)를 원인으로 지목 시 오진(100%)"
+    }
   }
 }

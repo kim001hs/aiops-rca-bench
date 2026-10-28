@@ -98,7 +98,57 @@ jobs:
 
           echo "Online Boutique deployment initiated successfully."
 
-      # 10. 클러스터 상태 검증 및 Step Summary 작성
+      # 10. Prometheus & Alertmanager 모니터링 스택 배포
+      - name: Deploy Monitoring Stack (kube-prometheus-stack)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CLUSTER_NAME="$(terraform output -raw eks_cluster_name)"
+          aws eks update-kubeconfig --region ap-northeast-2 --name "$CLUSTER_NAME"
+
+          echo "Adding Prometheus Helm repository..."
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+          echo "Deploying kube-prometheus-stack..."
+          helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --create-namespace \
+            --values "$GITHUB_WORKSPACE/monitoring/prometheus-values.yaml"
+
+          echo "Monitoring stack deployed successfully."
+
+      # 11. HolmesGPT 자율 조사 에이전트 배포
+      - name: Deploy HolmesGPT Agent
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          CLUSTER_NAME="$(terraform output -raw eks_cluster_name)"
+          aws eks update-kubeconfig --region ap-northeast-2 --name "$CLUSTER_NAME"
+
+          echo "Creating holmes-secrets in namespace monitoring..."
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic holmes-secrets \
+            --namespace monitoring \
+            --from-literal=OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "Adding Robusta Helm repository..."
+          helm repo add robusta https://robusta-charts.storage.googleapis.com
+          helm repo update
+
+          echo "Deploying HolmesGPT..."
+          helm upgrade --install holmesgpt robusta/holmesgpt \
+            --namespace monitoring \
+            --values "$GITHUB_WORKSPACE/monitoring/holmes-values.yaml"
+
+          echo "HolmesGPT deployed successfully."
+
+      # 12. 클러스터 상태 검증 및 Step Summary 작성
       - name: Output Connection Guide & Summary
         shell: bash
         run: |
@@ -117,10 +167,13 @@ jobs:
           echo "Checking onlineboutique pods status..."
           PODS_OUTPUT="$(kubectl get pods -n onlineboutique -o wide 2>&1 || echo 'Pod lookup skipped')"
 
+          echo "Checking monitoring & holmes pods status..."
+          MONITORING_OUTPUT="$(kubectl get pods -n monitoring -o wide 2>&1 || echo 'Monitoring lookup skipped')"
+
           {
-            echo "## 🚀 AWS EKS 인프라 및 Online Boutique 배포 완료!"
+            echo "## 🚀 AWS EKS, Online Boutique, Prometheus & HolmesGPT 배포 완료!"
             echo ""
-            echo "모바일/웹 원클릭으로 클러스터 프로비저닝 및 Online Boutique 마이크로서비스 배포가 성공적으로 완료되었습니다."
+            echo "클러스터 프로비저닝, Online Boutique MSA, Prometheus/Alertmanager 모니터링, HolmesGPT 자율 진단 에이전트 배포가 성공적으로 완료되었습니다."
             echo ""
             echo "### 📌 클러스터 연결 정보"
             echo "- **클러스터명:** \`$CLUSTER_NAME\`"
@@ -130,6 +183,7 @@ jobs:
             echo "$KUBECONFIG_CMD"
             echo "kubectl get nodes"
             echo "kubectl get pods -n onlineboutique"
+            echo "kubectl get pods -n monitoring"
             echo '```'
             echo ""
             echo "### 🖥️ 워커 노드 상태"
@@ -140,5 +194,10 @@ jobs:
             echo "### 🛍️ Online Boutique 파드 상태"
             echo '```text'
             echo "$PODS_OUTPUT"
+            echo '```'
+            echo ""
+            echo "### 📊 Monitoring & HolmesGPT 파드 상태"
+            echo '```text'
+            echo "$MONITORING_OUTPUT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
