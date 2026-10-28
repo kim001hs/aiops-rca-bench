@@ -1,0 +1,35 @@
+# ==============================================================================
+# HolmesGPT Helm values for EKS Autonomous Root Cause Analysis
+# ==============================================================================
+
+# 1. LLM API Key 및 환경 변수 설정
+additionalEnvVars:
+  - name: OPENAI_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: holmes-secrets
+        key: OPENAI_API_KEY
+        optional: true
+  - name: MODEL
+    value: "openai/gpt-4o-mini"
+
+# 2. 모델 설정
+modelList:
+  default-model:
+    model: "openai/gpt-4o-mini"
+    temperature: 0
+
+# 3. 리소스 최적화
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# 4. 웹훅 수신용 Service 활성화
+service:
+  type: ClusterIP
+  port: 5001
+
