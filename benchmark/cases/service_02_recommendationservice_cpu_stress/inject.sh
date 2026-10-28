@@ -16,3 +16,4 @@ kubectl exec -n onlineboutique "$POD" -- sh -c 'nohup python3 -c "import multipr
 # CPU 부하가 올라갈 때까지 잠시 대기
 sleep 5
 echo "[Inject] recommendationservice CPU 부하 주입 완료 ($POD)"
+

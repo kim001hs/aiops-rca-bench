@@ -13,3 +13,4 @@ kubectl exec -n onlineboutique $pod -- sh -c 'nohup python3 -c "import multiproc
 # CPU 부하가 올라갈 때까지 잠시 대기
 Start-Sleep -Seconds 5
 Write-Host "[Inject] recommendationservice CPU 부하 주입 완료 ($pod)" -ForegroundColor Green
+

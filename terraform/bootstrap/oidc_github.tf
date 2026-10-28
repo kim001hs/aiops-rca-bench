@@ -31,6 +31,7 @@ resource "aws_iam_role" "github_actions" {
             "token.actions.githubusercontent.com:sub" = [
               "repo:kim001hs*/msa-demo*:*",
               "repo:kim001hs*/holmesgpt*:*",
+              "repo:kim001hs*/aiops-rca-bench*:*",
               "repo:${var.github_repo}:*"
             ]
           }

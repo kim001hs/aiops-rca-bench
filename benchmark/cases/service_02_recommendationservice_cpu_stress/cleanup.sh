@@ -7,3 +7,4 @@ kubectl rollout restart deployment recommendationservice -n onlineboutique
 # 파드가 새로 생성되어 1/1 Running 및 Ready가 될 때까지 대기
 kubectl rollout status deployment recommendationservice -n onlineboutique --timeout=60s
 echo "[Cleanup] recommendationservice 정상 복구 완료."
+
