@@ -1,0 +1,36 @@
+{
+  "case_id": "service_02_recommendationservice_cpu_stress",
+  "category": "resource",
+  "title": "Recommendationservice High CPU Usage (CPU Stress)",
+  "namespace": "onlineboutique",
+  "query": "Users report that the product recommendation section on the frontend is loading very slowly or timing out. Check the pods, deployments, and resource usage in namespace 'onlineboutique' (e.g. using 'kubectl top pods -n onlineboutique', 'kubectl describe pod -n onlineboutique', or checking container metrics/logs) to identify why the recommendation service is degraded. Identify the root cause component, fault type, and provide evidence.",
+  "ground_truth": {
+    "root_cause_component": "recommendationservice",
+    "fault_type": "High CPU Usage / CPU Exhaustion",
+    "symptom_service": "recommendationservice",
+    "affected_services": [
+      "frontend"
+    ]
+  },
+  "evaluation_criteria": {
+    "target_component": "recommendationservice",
+    "target_fault_type": "High CPU Usage / CPU Exhaustion / CPU Throttle",
+    "required_evidence": [
+      "high CPU utilization (e.g. kubectl top pod or container CPU metrics)",
+      "recommendationservice pod CPU spike"
+    ],
+    "negative_keywords": [
+      "cartservice is down",
+      "redis is down",
+      "network partition",
+      "OOMKilled"
+    ],
+    "scoring_dimensions": {
+      "CA": "100점: recommendationservice를 장애 근본 원인으로 지목 (부정문 언급 시 0점)",
+      "FA": "100점: CPU 과부하 / CPU 고갈 / Throttling 상태를 정확히 진단 (0 or 100점)",
+      "EA": "100점: kubectl top pods, CPU 수치, CPU 사용량 급증 등 구체적 증거 인용 수준 (0~100점)",
+      "JRA": "100점: CA 100점 AND FA 100점 동시 충족 시 통과 (Pass 100점 / Fail 0점)",
+      "FalseAttribution": "0%: 정상 컴포넌트(frontend, productcatalog 등)를 원인으로 지목 시 오진(100%)"
+    }
+  }
+}
