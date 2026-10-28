@@ -142,7 +142,7 @@ jobs:
           helm repo update
 
           echo "Deploying HolmesGPT..."
-          helm upgrade --install holmesgpt robusta/holmesgpt \
+          helm upgrade --install holmes robusta/holmes \
             --namespace monitoring \
             --values "$GITHUB_WORKSPACE/monitoring/holmes-values.yaml"
 
