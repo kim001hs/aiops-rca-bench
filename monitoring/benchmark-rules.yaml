@@ -1,0 +1,45 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: benchmark-fast-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: benchmark.microservices.rules
+      rules:
+        # 1. Deployment 파드가 0개이거나 사용 불가 상태 (cartservice scale=0 등)
+        - alert: ServiceDeploymentUnavailable
+          expr: kube_deployment_status_replicas_available{namespace="onlineboutique"} == 0
+          for: 15s
+          labels:
+            severity: critical
+            namespace: onlineboutique
+          annotations:
+            summary: "Service deployment {{ $labels.deployment }} has 0 available replicas."
+            description: "Deployment {{ $labels.deployment }} in namespace {{ $labels.namespace }} has no running pods available."
+
+        # 2. 파드가 CrashLoopBackOff 또는 Pending/Error 상태
+        - alert: ServicePodNotHealthy
+          expr: (kube_pod_status_phase{namespace="onlineboutique", phase=~"Failed|Pending|Unknown"} > 0) or (kube_pod_container_status_ready{namespace="onlineboutique"} == 0 and kube_pod_status_phase{namespace="onlineboutique", phase="Running"} > 0)
+          for: 15s
+          labels:
+            severity: critical
+            namespace: onlineboutique
+          annotations:
+            summary: "Pod {{ $labels.pod }} is unhealthy or not ready."
+            description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been not ready for over 15 seconds."
+
+        # 3. CPU 과부하 (recommendationservice CPU stress 시나리오 2 대응)
+        - alert: ServiceHighCpuUsage
+          expr: sum by (pod, namespace) (rate(container_cpu_usage_seconds_total{namespace="onlineboutique", container!=""}[1m])) > 0.85
+          for: 20s
+          labels:
+            severity: warning
+            namespace: onlineboutique
+          annotations:
+            summary: "Pod {{ $labels.pod }} CPU usage exceeded 85%."
+            description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is consuming excessive CPU."
+

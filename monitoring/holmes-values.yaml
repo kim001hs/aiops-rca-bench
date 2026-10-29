@@ -4,6 +4,12 @@
 
 # 1. LLM API Key 및 환경 변수 설정
 additionalEnvVars:
+  - name: GEMINI_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: holmes-secrets
+        key: GEMINI_API_KEY
+        optional: true
   - name: OPENAI_API_KEY
     valueFrom:
       secretKeyRef:
@@ -11,12 +17,12 @@ additionalEnvVars:
         key: OPENAI_API_KEY
         optional: true
   - name: MODEL
-    value: "openai/gpt-4o-mini"
+    value: "gemini/gemini-3.1-flash-lite"
 
 # 2. 모델 설정
 modelList:
   default-model:
-    model: "openai/gpt-4o-mini"
+    model: "gemini/gemini-3.1-flash-lite"
     temperature: 0
 
 # 3. 리소스 최적화
