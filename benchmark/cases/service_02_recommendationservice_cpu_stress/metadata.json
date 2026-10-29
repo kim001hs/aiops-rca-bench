@@ -1,0 +1,33 @@
+{
+  "case_id": "service_02_recommendationservice_cpu_stress",
+  "category": "resource",
+  "title": "Recommendationservice High CPU Usage (CPU Stress)",
+  "namespace": "onlineboutique",
+  "query": "There is a performance degradation and high CPU alert in the onlineboutique shopping mall. Users report degraded performance when browsing product recommendations. Check the pods, deployments, and metrics in namespace 'onlineboutique' (e.g. using 'kubectl top pods -n onlineboutique', 'kubectl get pods -n onlineboutique', and Prometheus metrics) to find the root cause. Identify the root cause component, fault type, and provide evidence.",
+  "ground_truth": {
+    "root_cause_component": "recommendationservice",
+    "fault_type": "High CPU Usage / CPU Stress",
+    "symptom_service": "recommendationservice",
+    "affected_services": ["frontend"]
+  },
+  "evaluation_criteria": {
+    "target_component": "recommendationservice",
+    "target_fault_type": "High CPU Usage / CPU Stress",
+    "required_evidence": [
+      "high cpu usage or cpu throttling or cpu stress or cpu consuming",
+      "recommendationservice pod high cpu load"
+    ],
+    "negative_keywords": [
+      "cartservice is down",
+      "redis connection failed",
+      "database error"
+    ],
+    "scoring_dimensions": {
+      "CA": "100점: recommendationservice를 장애 원인 컴포넌트로 지목 (부정문 언급 시 0점)",
+      "FA": "100점: CPU 과부하 / CPU Stress / CPU Throttling 결함 유형을 정확히 진단 (0 or 100점)",
+      "EA": "100점: CPU 사용량 메트릭, top pod 결과, 또는 과도한 CPU 소모 증거 인용 (0~100점)",
+      "JRA": "100점: CA 100점 AND FA 100점 AND FalseAttribution 0% 동시 충족 시 통과 (Pass 100점 / Fail 0점)",
+      "FalseAttribution": "0%: 정상 컴포넌트(cartservice, redis 등)를 장애 원인으로 지목 시 100%"
+    }
+  }
+}
