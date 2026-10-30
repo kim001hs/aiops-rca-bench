@@ -124,6 +124,7 @@ jobs:
         shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
 
@@ -135,18 +136,19 @@ jobs:
           kubectl create secret generic holmes-secrets \
             --namespace monitoring \
             --from-literal=OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
+            --from-literal=GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
           echo "Adding Robusta Helm repository..."
           helm repo add robusta https://robusta-charts.storage.googleapis.com
           helm repo update
 
-          echo "Deploying HolmesGPT..."
-          helm upgrade --install holmesgpt robusta/holmesgpt \
+          echo "Deploying Holmes..."
+          helm upgrade --install holmes robusta/holmes \
             --namespace monitoring \
             --values "$GITHUB_WORKSPACE/monitoring/holmes-values.yaml"
 
-          echo "HolmesGPT deployed successfully."
+          echo "Holmes deployed successfully."
 
       # 12. 클러스터 상태 검증 및 Step Summary 작성
       - name: Output Connection Guide & Summary
