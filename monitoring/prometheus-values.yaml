@@ -27,7 +27,7 @@ alertmanager:
     receivers:
       - name: 'holmesgpt-webhook'
         webhook_configs:
-          - url: 'http://holmesgpt.monitoring.svc.cluster.local:5001/api/alertmanager'
+          - url: 'http://holmes-holmes.monitoring.svc.cluster.local:80/api/alertmanager'
             send_resolved: false
             max_alerts: 5
 
