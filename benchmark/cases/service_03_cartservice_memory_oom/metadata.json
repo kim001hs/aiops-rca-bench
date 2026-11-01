@@ -1,0 +1,35 @@
+{
+  "case_id": "service_03_cartservice_memory_oom",
+  "category": "resource",
+  "title": "Cartservice Memory Limit Exceeded (OOMKilled)",
+  "namespace": "onlineboutique",
+  "expected_alert": {"names": ["ServiceContainerOOMKilled", "ServicePodNotHealthy"], "service": "cartservice", "service_labels": ["pod"]},
+  "query": "There is a failure in the onlineboutique shopping mall. Users report that cart operations fail and the service seems unstable. Check the pods, deployments, and events in namespace 'onlineboutique' (e.g. using 'kubectl get pods -n onlineboutique', 'kubectl describe pod -l app=cartservice -n onlineboutique', and pod restart logs) to find the root cause. Identify the root cause component, fault type, and provide evidence.",
+  "ground_truth": {
+    "root_cause_component": "cartservice",
+    "fault_type": "Memory Limit Exceeded / OOMKilled",
+    "symptom_service": "cartservice",
+    "affected_services": ["frontend", "checkoutservice"]
+  },
+  "evaluation_criteria": {
+    "target_component": "cartservice",
+    "target_fault_type": "Memory Limit Exceeded / OOMKilled",
+    "required_evidence": [
+      "oomkilled or oom or out of memory or exit code 137",
+      "crashloopbackoff or restart"
+    ],
+    "negative_keywords": [
+      "redis-cart is down",
+      "recommendationservice cpu stress",
+      "database connection failed"
+    ],
+    "scoring_dimensions": {
+      "CA": "100점: cartservice를 장애 원인 컴포넌트로 지목 (부정문 언급 시 0점)",
+      "FA": "100점: Memory Limit Exceeded / OOMKilled / CrashLoopBackOff 결함 유형을 정확히 진단 (0 or 100점)",
+      "EA": "100점: OOMKilled 이벤트, Exit code 137, 또는 CrashLoopBackOff 증거 인용 (0~100점)",
+      "JRA": "100점: CA 100점 AND FA 100점 AND FalseAttribution 0% 동시 충족 시 통과 (Pass 100점 / Fail 0점)",
+      "FalseAttribution": "0%: 정상 컴포넌트(redis, recommendation 등)를 장애 원인으로 지목 시 100%"
+    }
+  }
+}
+

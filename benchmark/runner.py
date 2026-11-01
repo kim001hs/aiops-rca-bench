@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""
-E2E Benchmark Runner for Kubernetes AIOps RCA
-- 1. Pre-check: 검증 전 클러스터 파드 및 프론트엔드/카트 엔드포인트 정상 확인
-- 2. Fault Injection: 장애 주입 (inject.sh / inject.ps1 크로스 플랫폼 지원)
-- 3. Alert Detection (MTTD): Prometheus Alertmanager firing 알람 실시간 감지
-- 4. Autonomous Investigation (MTTI/TTD): HolmesGPT ReAct 자율 진단 실행 (alertmanager 모드 / ask 모드)
-- 5. Evaluation & Scorecard: Ground Truth 대조 독립 100점 채점 (CA, FA, EA, JRA, FalseAttribution, MTTD, MTTI)
-- 6. Cleanup & Recovery: 장애 해제 및 클러스터 원상 복구 (cleanup.sh / cleanup.ps1)
-- 7. History Retention: 최신 결과 파일 및 시계열 타임스탬프 히스토리 파일 동시 보존
+"""Cluster helpers for benchmark collection; the CLI delegates to collect.py.
+
+Holmes diagnosis runs in AWS through the alert receiver. Batch scoring runs in
+evaluate.py. Older direct-diagnosis helpers remain for compatibility but are
+not called by this CLI.
 """
 
 import argparse
@@ -111,65 +107,71 @@ def run_cmd(cmd, cwd=None, shell=True) -> subprocess.CompletedProcess:
     )
 
 
-def run_case_script(case_dir: Path, base_name: str) -> subprocess.CompletedProcess:
-    """
-    크로스 플랫폼 OS 셸 스크립트 실행기:
-    - Linux / macOS / CI: .sh 우선 실행 (실행 권한 부여), 없으면 .ps1 (pwsh)
-    - Windows: .ps1 우선 실행 (powershell), 없으면 .sh (Git Bash)
-    """
+def run_case_script(
+    case_dir: Path,
+    base_name: str,
+) -> subprocess.CompletedProcess:
+    case_dir = case_dir.resolve()
     sh_path = case_dir / f"{base_name}.sh"
     ps_path = case_dir / f"{base_name}.ps1"
 
     is_windows = sys.platform == "win32"
+    pwsh_bin = shutil.which("pwsh")
 
-    if is_windows:
-        if ps_path.exists():
-            cmd = f'powershell -ExecutionPolicy Bypass -File "{ps_path.resolve()}"'
-            return run_cmd(cmd, cwd=case_dir)
-        elif sh_path.exists():
-            bash_bin = get_bash_executable()
-            res = subprocess.run(
-                [bash_bin, str(sh_path.resolve())],
-                cwd=case_dir,
-                capture_output=True,
-                env=os.environ,
+    bash_candidate = get_bash_executable()
+    bash_bin = shutil.which(bash_candidate)
+
+    candidates = (
+        [("pwsh", pwsh_bin, ps_path), ("bash", bash_bin, sh_path)]
+        if is_windows
+        else [("bash", bash_bin, sh_path), ("pwsh", pwsh_bin, ps_path)]
+    )
+
+    for shell_name, executable, script_path in candidates:
+        if not executable or not script_path.is_file():
+            continue
+
+        if shell_name == "pwsh":
+            safe_path = str(script_path).replace("'", "''")
+            command = (
+                "[Console]::OutputEncoding = "
+                "[System.Text.UTF8Encoding]::new($false); "
+                f"& '{safe_path}'"
             )
-            stdout = res.stdout.decode("utf-8", errors="replace") if res.stdout else ""
-            stderr = res.stderr.decode("utf-8", errors="replace") if res.stderr else ""
-            return subprocess.CompletedProcess(res.args, res.returncode, stdout, stderr)
-    else:
-        if sh_path.exists():
-            try:
-                os.chmod(sh_path, 0o755)
-            except Exception:
-                pass
-            res = subprocess.run(
-                ["bash", str(sh_path.resolve())],
-                cwd=case_dir,
-                capture_output=True,
-                env=os.environ,
-            )
-            stdout = res.stdout.decode("utf-8", errors="replace") if res.stdout else ""
-            stderr = res.stderr.decode("utf-8", errors="replace") if res.stderr else ""
-            return subprocess.CompletedProcess(res.args, res.returncode, stdout, stderr)
-        elif ps_path.exists():
-            pwsh_bin = shutil.which("pwsh") or shutil.which("powershell")
-            if pwsh_bin:
-                res = subprocess.run(
-                    [pwsh_bin, "-File", str(ps_path.resolve())],
-                    cwd=case_dir,
-                    capture_output=True,
-                    env=os.environ,
-                )
-                stdout = res.stdout.decode("utf-8", errors="replace") if res.stdout else ""
-                stderr = res.stderr.decode("utf-8", errors="replace") if res.stderr else ""
-                return subprocess.CompletedProcess(res.args, res.returncode, stdout, stderr)
+            cmd = [
+                executable,
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy", "Bypass",
+                "-Command", command,
+            ]
+        else:
+            cmd = [executable, str(script_path)]
+
+        print(
+            f"[Runner] shell={executable} / script={script_path}",
+            flush=True,
+        )
+
+        return subprocess.run(
+            cmd,
+            cwd=case_dir,
+            shell=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            env=os.environ.copy(),
+        )
 
     return subprocess.CompletedProcess(
         args=[],
         returncode=1,
         stdout="",
-        stderr=f"❌ {base_name}.sh 또는 {base_name}.ps1 실행 스크립트를 찾을 수 없습니다.",
+        stderr=(
+            f"{base_name}: 실행 가능한 스크립트와 셸 조합이 없습니다. "
+            ".sh에는 Bash가, .ps1에는 PowerShell 7(pwsh)이 필요합니다."
+        ),
     )
 
 
@@ -193,7 +195,7 @@ def check_frontend_health(namespace: str = "onlineboutique", timeout: int = 45, 
 
         pf_cmd = ["kubectl", "port-forward", "svc/frontend", f"{local_port}:80", "-n", namespace]
         proc = subprocess.Popen(pf_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1.2)
+        time.sleep(2.0)
 
         try:
             # 1. /_healthz 검증
@@ -312,8 +314,12 @@ def wait_for_firing_alerts(alertmanager_url: str, namespace: str = "onlineboutiq
         time.sleep(poll_interval)
 
     mttd = round(time.time() - start_time, 2)
-    print(f"   ⏱️ [Alert Timeout] {timeout}초 내에 '{namespace}' 네임스페이스 알람이 감지되지 않았습니다. 조사를 계속 진행합니다.", flush=True)
+    print(f"   ⏱️ [Alert Timeout] {timeout}초 내에 '{namespace}' 네임스페이스 알람이 감지되지 않았습니다. 벤치마크를 실패 처리합니다.", flush=True)
     return False, mttd, []
+
+
+class AlertDetectionTimeoutError(RuntimeError):
+    """제한 시간 안에 대상 네임스페이스의 firing 알람이 발생하지 않음."""
 
 
 def precheck_cluster(namespace: str) -> bool:
@@ -424,14 +430,21 @@ def run_holmes(
             "cli",
         ]
     else:
-        print(f"   질의 내용: {query}", flush=True)
+        # 한국어 작성 지침 자동 부착
+        ko_instruction = "(모든 최종 진단 소견 및 권장 조치는 한국어로 작성할 것)"
+        if ko_instruction not in query:
+            effective_query = f"{query.strip()}\n\n{ko_instruction}"
+        else:
+            effective_query = query
+
+        print(f"   질의 내용: {effective_query}", flush=True)
         cmd = [
             sys.executable,
             "-u",
             "-m",
             "holmes.main",
             "ask",
-            query,
+            effective_query,
             "--model",
             selected_model,
             "--max-steps",
@@ -441,6 +454,8 @@ def run_holmes(
             "--no-interactive",
             "--bash-always-allow",
             "--fast-mode",
+            "--system-prompt-additions",
+            ko_instruction,
         ]
 
     if api_key:
@@ -511,6 +526,97 @@ def run_holmes(
         print(f"⚠️ Holmes 프로세스 비정상 종료 (exit code: {returncode})", flush=True)
 
     return duration, returncode
+
+
+def run_llm_judge(response_text: str, metadata: dict, model_name: str = None) -> dict | None:
+    """
+    LLM-as-a-Judge 전문 SRE 채점관 모듈:
+    수험생(HolmesGPT)이 작성한 마크다운 기술 보고서를 정밀 심사하여
+    1. root_cause_score (30점): 근본 원인 컴포넌트 및 결함 유형 식별
+    2. evidence_score (30점): K8s 메트릭/로그/타임스탬프 증거 인용의 타당성
+    3. remediation_score (20점): 1, 2, 3단계 해결 권고안(Actionable Solutions)의 실효성
+    4. factual_accuracy_score (20점): 허위 주장 및 환각 배제율
+    총 100점 만점으로 정밀 평가하고 한국어 상세 심사평(Reasoning)을 산출
+    """
+    if not response_text or len(response_text.strip()) < 10:
+        return {
+            "root_cause_score": 0.0,
+            "evidence_score": 0.0,
+            "remediation_score": 0.0,
+            "factual_accuracy_score": 0.0,
+            "total_score": 0.0,
+            "verdict": "FAIL",
+            "judge_feedback": "보고서 내용이 비어있거나 너무 짧아 평가할 수 없습니다.",
+        }
+
+    gt = metadata.get("ground_truth", {})
+    criteria = metadata.get("evaluation_criteria", {})
+    target_comp = criteria.get("target_component") or gt.get("root_cause_component") or "N/A"
+    target_fault = criteria.get("target_fault_type") or gt.get("fault_type") or "N/A"
+    req_ev = criteria.get("required_evidence", [])
+
+    system_prompt = (
+        "You are an expert Kubernetes SRE and AIOps Benchmark Evaluator (LLM-as-a-Judge).\n"
+        "Your role is to rigorously and objectively grade a Root Cause Analysis (RCA) report produced by an autonomous diagnostic agent against the Ground Truth."
+    )
+
+    eval_prompt = f"""[Ground Truth Reference]
+- Target Root-Cause Component: {target_comp}
+- Target Fault Type: {target_fault}
+- Ground Truth Overview: {json.dumps(gt, ensure_ascii=False)}
+- Expected Diagnostic Evidence: {json.dumps(req_ev, ensure_ascii=False)}
+
+[Candidate RCA Report to Grade]
+{response_text}
+
+[Scoring Rubric (100 Points Total)]
+1. root_cause_score (0~30): Did the report correctly diagnose {target_comp} and fault '{target_fault}' as the primary root cause without wrongly blaming innocent services?
+2. evidence_score (0~30): Did the report cite factual, convincing evidence (pod status, metrics, logs, events, timestamps, restarts)?
+3. remediation_score (0~20): Did the report propose logical, actionable, and practical engineering solutions or recovery steps?
+4. factual_accuracy_score (0~20): Is the report free of hallucinations, false attributions, or fabricated errors?
+
+Evaluate thoroughly and return ONLY a valid JSON object strictly matching this schema:
+{{
+  "root_cause_score": <float 0.0 - 30.0>,
+  "evidence_score": <float 0.0 - 30.0>,
+  "remediation_score": <float 0.0 - 20.0>,
+  "factual_accuracy_score": <float 0.0 - 20.0>,
+  "total_score": <float 0.0 - 100.0>,
+  "verdict": "<PASS or FAIL>",
+  "judge_feedback": "<2-4 sentences in Korean explaining the grade, key reasoning, strengths, and weaknesses>"
+}}
+"""
+    judge_model = model_name or os.environ.get("MODEL", "gemini/gemini-3.1-flash-lite")
+    try:
+        from litellm import completion
+        res = completion(
+            model=judge_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": eval_prompt},
+            ],
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            timeout=30,
+        )
+        content = res.choices[0].message.content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1]
+            if content.endswith("```"):
+                content = content.rsplit("\n", 1)[0]
+        data = json.loads(content)
+        return {
+            "root_cause_score": float(data.get("root_cause_score", 0.0)),
+            "evidence_score": float(data.get("evidence_score", 0.0)),
+            "remediation_score": float(data.get("remediation_score", 0.0)),
+            "factual_accuracy_score": float(data.get("factual_accuracy_score", 0.0)),
+            "total_score": float(data.get("total_score", 0.0)),
+            "verdict": str(data.get("verdict", "FAIL")).upper(),
+            "judge_feedback": str(data.get("judge_feedback", "평가 완료")),
+        }
+    except Exception as e:
+        print(f"   ⚠️ [LLM-as-a-Judge] 심사 중 예외 발생 (기존 규칙 기반 점수 유지): {e}")
+        return None
 
 
 def evaluate_results(
@@ -617,6 +723,38 @@ def evaluate_results(
                         response_text += content + "\n"
         if not response_text:
             response_text = str(rca_data.get("response") or rca_data.get("answer") or "")
+
+    # 사람이 바로 읽을 수 있는 마크다운 보고서 파일 자동 생성
+    case_id = metadata.get("case_id", "unknown_case")
+    run_dir = output_file.parent
+    version_dir = run_dir.parent
+    version_name = version_dir.name
+    run_name = run_dir.name
+
+    report_md_path = run_dir / "report.md"
+
+    md_content = f"""# 📑 Root Cause Analysis (RCA) 진단 보고서
+> **케이스 ID**: `{case_id}`<br>
+> **장애 시나리오**: {metadata.get('title', 'N/A')}<br>
+> **조사 모드**: `{mode.upper()}`<br>
+> **실험 버전**: `{version_name}` | **회차**: `Run {run_name}`<br>
+> **생성 일시**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>
+> **MTTD(감지 시간)**: {mttd:.2f}초 | **MTTI(진단 소요)**: {duration:.2f}초
+
+---
+
+## 🤖 자율 진단 에이전트(HolmesGPT) 최종 소견
+
+{response_text.strip()}
+"""
+    try:
+        with open(report_md_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        print(f"   📄 [Report] 사람이 읽기 편한 마크다운 보고서 저장: {report_md_path.name}")
+        latest_report_path = version_dir / "latest_report.md"
+        shutil.copyfile(report_md_path, latest_report_path)
+    except Exception as e:
+        print(f"   ⚠️ 마크다운 보고서 저장 실패: {e}")
 
     # 도구 호출 및 스텝 수 집계
     tool_calls = rca_data.get("tool_calls", [])
@@ -739,7 +877,15 @@ def evaluate_results(
             break
     false_attr_rate = 100.0 if false_attribution else 0.0
 
-    # 5. 결합 진단 정확도 (JRA: CA 100점 & FA 100점 & FalseAttribution 0%)
+    # 5. LLM-as-a-Judge 전문 SRE 심층 채점 실행
+    print("   ⚖️ [LLM-as-a-Judge] 전문 SRE 채점관 AI가 심층 추론, 증거, 해결책을 종합 심사 중...")
+    judge_res = run_llm_judge(response_text, metadata, model_name=os.environ.get("MODEL"))
+    if judge_res and judge_res.get("evidence_score", 0.0) >= 15.0:
+        # LLM 채점관이 논리적 증거 인용을 인정한 경우 EA 점수 보정 (키워드 불일치 억울한 0점 방지)
+        llm_ea = round((judge_res["evidence_score"] / 30.0) * 100.0, 1)
+        ea = max(ea, llm_ea)
+
+    # 6. 결합 진단 정확도 (JRA: CA 100점 & FA 100점 & FalseAttribution 0%)
     jra = 100.0 if (ca == 100.0 and fa >= 80.0 and false_attr_rate == 0.0) else 0.0
 
     status = "PASS" if jra == 100.0 else "PARTIAL/FAIL"
@@ -774,12 +920,32 @@ def evaluate_results(
         "Status": status,
     }
 
+    if judge_res:
+        scorecard["LLM_Judge"] = {
+            "Total_Score": judge_res["total_score"],
+            "Verdict": judge_res["verdict"],
+            "Root_Cause_Score (30)": judge_res["root_cause_score"],
+            "Evidence_Score (30)": judge_res["evidence_score"],
+            "Remediation_Score (20)": judge_res["remediation_score"],
+            "Factual_Accuracy_Score (20)": judge_res["factual_accuracy_score"],
+            "Feedback": judge_res["judge_feedback"],
+        }
+
     print("=" * 60)
     print(f" 🏆 벤치마크 평가 스코어카드: [{metadata.get('case_id')}] (모드: {mode.upper()})")
     print("=" * 60)
+    if judge_res:
+        v_icon = "🎯 PASS" if judge_res["verdict"] == "PASS" else "❌ FAIL"
+        print(f" ⚖️ [LLM-as-a-Judge 심층 심사 결과: {v_icon} ({judge_res['total_score']}점 / 100점)]")
+        print(f"   • 원인 진단 정확도   : {judge_res['root_cause_score']} / 30점")
+        print(f"   • 증거 인용 타당성   : {judge_res['evidence_score']} / 30점")
+        print(f"   • 해결책/권고안 실효성 : {judge_res['remediation_score']} / 20점")
+        print(f"   • 사실성/환각 배제   : {judge_res['factual_accuracy_score']} / 20점")
+        print(f"   📝 심사위원 총평:\n      \"{judge_res['judge_feedback']}\"")
+        print("-" * 60)
     print(f" • 컴포넌트 정확도 (CA)   : {'✅ 100점 (PASS)' if ca == 100.0 else '❌ 0점 (FAIL)'} (정답: {target_comp})")
     print(f" • 결함 유형 정확도 (FA)   : {'✅ 100점 (PASS)' if fa == 100.0 else f'⚠️ {fa}점'} (정답: {target_fault})")
-    print(f" • 증거 수집 정확도 (EA)   : {'✅ 100점 (PASS)' if ea == 100.0 else f'⚠️ {ea}점'} ({len(matched_ev)}/{len(required_evidence)}개 증거 채택)")
+    print(f" • 증거 수집 정확도 (EA)   : {'✅ 100점 (PASS)' if ea >= 80.0 else f'⚠️ {ea}점'} ({len(matched_ev)}/{len(required_evidence)}개 키워드 매칭)")
     print(f" • 허위 귀인율 (FalseAttr) : {'✅ 0% (Clean)' if false_attr_rate == 0.0 else '🚨 100% (오진 감지)'}")
     print(f" • 결합 진단 정확도 (JRA)  : {'🎯 100점 (PASS)' if jra == 100.0 else '❌ 0점 (FAIL)'}")
     print(f" • 감지 소요 시간 (MTTD)  : ⏱️  {mttd}초")
@@ -808,16 +974,28 @@ def cleanup_fault(case_dir: Path, namespace: str = "onlineboutique") -> bool:
         print(f"❌ 복구 스크립트 실행 실패: {res.stderr.strip()}")
         return False
 
-    print("   ⏳ 복구 후 파드 안정화 및 Ready 상태 검증 중 (timeout=60s)...")
-    wait_res = run_cmd(f"kubectl wait --for=condition=Ready pods --all -n {namespace} --timeout=60s")
+    # 롤아웃 시작 후 K8s 컨트롤러 상태 전파 대기 (5초)
+    time.sleep(5)
+
+    print("   ⏳ 복구 후 파드 안정화 및 배포 롤아웃 검증 중 (timeout=90s)...")
+    # Terminating 중인 이전 파드로 인한 오탐 방지: deployment rollout status 및 파드 Ready 동시 검증
+    rollout_res = run_cmd(f"kubectl rollout status deployment -n {namespace} --timeout=90s")
+    if rollout_res.returncode != 0:
+        print(f"⚠️ 롤아웃 상태 확인 경고: {rollout_res.stderr.strip() or rollout_res.stdout.strip()}")
+
+    wait_res = run_cmd(f"kubectl wait --for=condition=Ready pods -l app -n {namespace} --timeout=60s")
     if wait_res.returncode != 0:
-        print(f"❌ 복구 후 파드 Ready 검증 실패: {wait_res.stderr.strip() or wait_res.stdout.strip()}")
-        return False
+        # 종료 중(Terminating) 파드 제외하고 실제 가동 중 파드 재검증
+        retry_wait = run_cmd(f"kubectl wait --for=condition=Ready pods -l app -n {namespace} --field-selector=status.phase=Running --timeout=30s")
+        if retry_wait.returncode != 0:
+            print(f"❌ 복구 후 파드 Ready 검증 실패: {wait_res.stderr.strip() or wait_res.stdout.strip()}")
+            return False
+
     print("   ✅ 모든 워크로드 Pod Ready 상태 복구 확인.")
     time.sleep(5)
 
     print("   🌐 복구 후 프론트엔드 및 장바구니 기능 검증 중...")
-    healthy, msg = check_frontend_health(namespace, timeout=45, require_cart=True)
+    healthy, msg = check_frontend_health(namespace, timeout=75, require_cart=True)
     if not healthy:
         print(f"❌ 복구 후 기능 검증 실패: {msg}")
         return False
@@ -845,10 +1023,11 @@ def main():
         default="http://localhost:9093",
         help="Prometheus Alertmanager URL (기본값: http://localhost:9093)",
     )
+    default_model = os.environ.get("MODEL", "gemini/gemini-3.1-flash-lite")
     parser.add_argument(
         "--model",
-        default="gemini/gemini-3.1-flash-lite",
-        help="HolmesGPT가 사용할 LLM 모델 (기본값: gemini/gemini-3.1-flash-lite, 무료 티어 권장)",
+        default=default_model,
+        help=f"HolmesGPT가 사용할 LLM 모델 (기본값: {default_model})",
     )
     parser.add_argument(
         "--max-steps",
@@ -874,6 +1053,19 @@ def main():
         default=300,
         help="HolmesGPT 자율 조사 실행 타임아웃 초 (기본값: 300초)",
     )
+    parser.add_argument(
+        "-v",
+        "--version",
+        "--tag",
+        dest="version",
+        default="v1",
+        help="실험 버전 (예: v1, v2, baseline, with_trace 등, 기본값: v1)",
+    )
+    parser.add_argument(
+        "--run",
+        default=None,
+        help="실행 회차 번호 지정 (미지정 시 1부터 자동 증가 순차 번호 부여)",
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent
@@ -887,25 +1079,45 @@ def main():
     with open(metadata_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
 
-    results_dir = project_root / "results"
-    results_dir.mkdir(exist_ok=True)
+    version = (args.version or "v1").strip()
     case_id = metadata.get("case_id")
     target_ns = metadata.get("namespace", "onlineboutique")
+
+    version_dir = project_root / "results" / case_id / version
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    # 기존 순차 번호(1, 2, 3...) 폴더 스캔
+    existing_runs = [
+        int(d.name) for d in version_dir.iterdir()
+        if d.is_dir() and d.name.isdigit()
+    ]
 
     # 오프라인 재채점 모드 (--rescore)
     if args.rescore:
         if args.rescore == "latest":
-            rca_file = results_dir / f"{case_id}_rca.json"
+            if not existing_runs:
+                print(f"❌ 재채점할 실행 이력이 없습니다: {version_dir}")
+                sys.exit(1)
+            target_run_num = max(existing_runs)
+            target_run_dir = version_dir / str(target_run_num)
+            rca_file = target_run_dir / "rca_raw.json"
+        elif args.rescore.isdigit():
+            target_run_num = int(args.rescore)
+            target_run_dir = version_dir / str(target_run_num)
+            rca_file = target_run_dir / "rca_raw.json"
         else:
             rca_file = Path(args.rescore)
+            target_run_dir = rca_file.parent
+            target_run_num = int(target_run_dir.name) if target_run_dir.name.isdigit() else 1
+
         if not rca_file.exists():
             print(f"❌ 재채점할 대상 RCA 파일을 찾을 수 없습니다: {rca_file}")
             sys.exit(1)
 
-        print(f"\n🔄 [Re-scoring Mode] 기존 RCA 파일 재채점 수행: {rca_file.name}")
+        print(f"\n🔄 [Re-scoring Mode] 기존 RCA 파일 재채점 수행: {rca_file} (Run {target_run_num})")
         duration = 0.0
         mttd = 0.0
-        old_scorecard = results_dir / f"{case_id}_scorecard.json"
+        old_scorecard = target_run_dir / "scorecard.json"
         if old_scorecard.exists():
             try:
                 with open(old_scorecard, "r", encoding="utf-8") as f:
@@ -921,12 +1133,14 @@ def main():
             duration,
             mttd=mttd,
             mode=args.mode,
-            run_id="run_baseline_rescore",
+            run_id=f"{case_id}_{version}_{target_run_num}",
             holmes_returncode=None,
         )
         scorecard["Cleanup_Success"] = None
         scorecard["Holmes_Returncode"] = None
-        scorecard_path = results_dir / f"{case_id}_scorecard.json"
+        scorecard["Version"] = version
+        scorecard["Run Number"] = target_run_num
+        scorecard_path = target_run_dir / "scorecard.json"
         with open(scorecard_path, "w", encoding="utf-8") as f:
             json.dump(scorecard, f, indent=2, ensure_ascii=False)
         print(f"\n✅ 재채점 완료 및 스코어카드 저장: {scorecard_path}")
@@ -958,10 +1172,17 @@ def main():
     scorecard = None
     mttd = 0.0
     firing_alerts = []
-    run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    run_dir = results_dir / run_id
+
+    # 순차 번호 (1, 2, 3...) 결정 및 디렉터리 구성
+    if args.run:
+        run_number = int(args.run)
+    else:
+        run_number = max(existing_runs, default=0) + 1
+
+    run_dir = version_dir / str(run_number)
     run_dir.mkdir(parents=True, exist_ok=True)
-    output_file = run_dir / f"{case_id}_rca.json"
+    run_id = f"{case_id}_{version}_{run_number}"
+    output_file = run_dir / "rca_raw.json"
 
     if output_file.exists():
         output_file.unlink()
@@ -973,7 +1194,6 @@ def main():
             raise RuntimeError("고의 장애 주입 스크립트 실행 실패")
 
         # 3. Alert Detection (Alertmanager 모드인 경우 firing 알람 대기 및 MTTD 산출)
-        investigate_mode = args.mode
         if args.mode == "alertmanager":
             detected, mttd, firing_alerts = wait_for_firing_alerts(
                 args.alertmanager_url,
@@ -982,12 +1202,13 @@ def main():
                 poll_interval=3.0,
             )
             if not detected:
-                print("   ⚠️ Alertmanager 알람 미발생으로 인해 메타데이터 질의문(ASK) 모드로 자동 폴백 전환합니다.", flush=True)
-                investigate_mode = "ask"
+                raise AlertDetectionTimeoutError(
+                    f"{mttd:.2f}초 동안 namespace={target_ns}의 firing 알람이 감지되지 않았습니다."
+                )
 
         # 4. Investigate (MTTI/TTD 측정)
         duration, holmes_returncode = run_holmes(
-            mode=investigate_mode,
+            mode=args.mode,
             query=metadata.get("query", ""),
             output_file=output_file,
             alertmanager_url=args.alertmanager_url,
@@ -1004,7 +1225,7 @@ def main():
             duration,
             mttd=mttd,
             firing_alerts=firing_alerts,
-            mode=investigate_mode,
+            mode=args.mode,
             run_id=run_id,
             holmes_returncode=holmes_returncode,
         )
@@ -1037,10 +1258,17 @@ def main():
         # scorecard 파일 갱신 및 저장
         if run_dir is not None:
             if scorecard is None:
-                fail_status = "FAILED_INTERRUPT" if isinstance(pipeline_error, KeyboardInterrupt) else "FAILED_PIPELINE"
+                if isinstance(pipeline_error, KeyboardInterrupt):
+                    fail_status = "FAILED_INTERRUPT"
+                elif isinstance(pipeline_error, AlertDetectionTimeoutError):
+                    fail_status = "FAILED_ALERT_TIMEOUT"
+                else:
+                    fail_status = "FAILED_PIPELINE"
                 scorecard = {
                     "Run ID": run_id,
                     "Case ID": metadata.get("case_id"),
+                    "Version": version,
+                    "Run Number": run_number,
                     "Title": metadata.get("title"),
                     "Timestamp": datetime.now().isoformat(),
                     "Investigation Mode": args.mode,
@@ -1061,37 +1289,33 @@ def main():
                     "Cleanup_Success": cleanup_success,
                     "Status": fail_status,
                 }
+                if pipeline_error is not None:
+                    scorecard["Failure Reason"] = str(pipeline_error)
             else:
                 scorecard["Cleanup_Success"] = cleanup_success
+                scorecard["Version"] = version
+                scorecard["Run Number"] = run_number
 
             if not cleanup_success:
                 scorecard["Status"] = "FAILED_CLEANUP"
                 scorecard["JRA (Joint Root-Cause Accuracy, 100점)"] = 0.0
 
-            run_scorecard_path = run_dir / f"{case_id}_scorecard.json"
-            with open(run_scorecard_path, "w", encoding="utf-8") as f:
+            scorecard_path = run_dir / "scorecard.json"
+            with open(scorecard_path, "w", encoding="utf-8") as f:
                 json.dump(scorecard, f, indent=2, ensure_ascii=False)
 
-            # 최신 결과 파일 갱신
-            latest_output_file = results_dir / f"{case_id}_rca.json"
-            latest_scorecard_path = results_dir / f"{case_id}_scorecard.json"
-            if output_file.exists():
-                shutil.copyfile(output_file, latest_output_file)
-            else:
-                if latest_output_file.exists():
-                    latest_output_file.unlink()
-            shutil.copyfile(run_scorecard_path, latest_scorecard_path)
+            # 최신 실행 스코어카드 빠른 접근을 위한 사본 저장
+            try:
+                shutil.copyfile(scorecard_path, version_dir / "latest_scorecard.json")
+            except Exception:
+                pass
 
-            print(f"\n📁 실행 결과 및 스코어카드 저장: {run_dir}")
-            print(f"📁 최신 채점 스코어카드 갱신: {latest_scorecard_path}")
-
-            if not args.no_history:
-                hist_scorecard = results_dir / f"{case_id}_scorecard_{run_id}.json"
-                hist_rca = results_dir / f"{case_id}_rca_{run_id}.json"
-                shutil.copyfile(run_scorecard_path, hist_scorecard)
-                if output_file.exists():
-                    shutil.copyfile(output_file, hist_rca)
-                print(f"📜 시계열 히스토리 백업 완료: {hist_scorecard.name}")
+            report_md_file = run_dir / "report.md"
+            print(f"\n📁 케이스 실행 결과 저장 완료: {run_dir}")
+            if scorecard.get("Holmes_Returncode") is not None and report_md_file.exists():
+                print(f"   📄 마크다운 기술 보고서: {report_md_file.name} (최신 복사본: {version_dir / 'latest_report.md'})")
+            print(f"   📊 스코어카드 파일: {scorecard_path.name}")
+            print(f"   📦 원본 로그 데이터: {output_file.name}")
 
     # 벤치마크 최종 합격 판정
     is_benchmark_passed = (
@@ -1127,4 +1351,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from collect import main as collect_main
+    sys.exit(collect_main())
