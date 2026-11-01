@@ -107,6 +107,8 @@ namespace cartservice.cartstore
         {
             try
             {
+                // A successful cache read verifies the configured Redis endpoint.
+                _cache.Get("__cartservice_healthcheck__");
                 return true;
             }
             catch (Exception)

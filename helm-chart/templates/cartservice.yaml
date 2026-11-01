@@ -73,7 +73,7 @@ spec:
               - ALL
           privileged: false
           readOnlyRootFilesystem: true
-        image: {{ .Values.images.repository }}/{{ .Values.cartService.name }}:{{ .Values.images.tag | default .Chart.AppVersion }}
+        image: {{ .Values.cartService.image | default (printf "%s/%s:%s" .Values.images.repository .Values.cartService.name (.Values.images.tag | default .Chart.AppVersion)) }}
         ports:
         - containerPort: 7070
         env:
@@ -89,11 +89,13 @@ spec:
           initialDelaySeconds: 15
           grpc:
             port: 7070
+            service: readiness
         livenessProbe:
           initialDelaySeconds: 15
           periodSeconds: 10
           grpc:
             port: 7070
+            service: liveness
 ---
 apiVersion: v1
 kind: Service

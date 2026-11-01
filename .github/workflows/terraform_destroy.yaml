@@ -71,6 +71,15 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
+      - name: Load persistent alert resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUCKET="$(aws ssm get-parameter --name /msa-demo/alert-results-bucket --query Parameter.Value --output text)"
+          REPO="$(aws ssm get-parameter --name /msa-demo/alert-receiver-repository --query Parameter.Value --output text)"
+          echo "TF_VAR_alert_results_bucket=$BUCKET" >> "$GITHUB_ENV"
+          echo "TF_VAR_alert_receiver_image=$REPO:latest" >> "$GITHUB_ENV"
+
       # 7. Kubernetes가 생성한 AWS ELB/ENI/보안 그룹을 EKS 삭제 전에 정리
       - name: Delete Kubernetes LoadBalancer Services
         shell: bash

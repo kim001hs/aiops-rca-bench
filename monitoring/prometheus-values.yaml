@@ -17,17 +17,17 @@ alertmanager:
       group_wait: 10s
       group_interval: 30s
       repeat_interval: 12h
-      receiver: 'holmesgpt-webhook'
+      receiver: 'alert-receiver'
       routes:
         # onlineboutique 네임스페이스의 알람을 우선적으로 holmes로 전달
         - matchers:
             - namespace = "onlineboutique"
-          receiver: 'holmesgpt-webhook'
+          receiver: 'alert-receiver'
           continue: true
     receivers:
-      - name: 'holmesgpt-webhook'
+      - name: 'alert-receiver'
         webhook_configs:
-          - url: 'http://holmes-holmes.monitoring.svc.cluster.local:80/api/alertmanager'
+          - url: 'http://alert-receiver.monitoring.svc.cluster.local:8080/webhook'
             send_resolved: false
             max_alerts: 5
 

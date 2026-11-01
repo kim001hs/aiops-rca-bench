@@ -77,6 +77,33 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
+      - name: Load persistent alert resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUCKET="$(aws ssm get-parameter --name /msa-demo/alert-results-bucket --query Parameter.Value --output text)"
+          REPO="$(aws ssm get-parameter --name /msa-demo/alert-receiver-repository --query Parameter.Value --output text)"
+          CART_REPO="$(aws ssm get-parameter --name /msa-demo/cartservice-benchmark-repository --query Parameter.Value --output text)"
+          echo "TF_VAR_alert_results_bucket=$BUCKET" >> "$GITHUB_ENV"
+          echo "RECEIVER_REPO=$REPO" >> "$GITHUB_ENV"
+          echo "CART_REPO=$CART_REPO" >> "$GITHUB_ENV"
+
+      - name: Build and push alert receiver
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin "${RECEIVER_REPO%%/*}"
+          docker build -t "$RECEIVER_REPO:${GITHUB_SHA}" "$GITHUB_WORKSPACE/alert-receiver"
+          docker push "$RECEIVER_REPO:${GITHUB_SHA}"
+          echo "TF_VAR_alert_receiver_image=$RECEIVER_REPO:${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Build and push cartservice with Redis health check
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -t "$CART_REPO:${GITHUB_SHA}" "$GITHUB_WORKSPACE/src/cartservice/src"
+          docker push "$CART_REPO:${GITHUB_SHA}"
+
       # 8. EKS 클러스터 및 인프라 프로비저닝 (약 10~15분 소요)
       - name: Terraform Apply
         run: terraform apply -auto-approve -lock-timeout=10m
@@ -94,7 +121,8 @@ jobs:
           echo "Deploying Online Boutique Helm chart..."
           helm upgrade --install onlineboutique "$GITHUB_WORKSPACE/helm-chart" \
             --namespace onlineboutique \
-            --create-namespace
+            --create-namespace \
+            --set-string "cartService.image=$CART_REPO:${GITHUB_SHA}"
 
           echo "Online Boutique deployment initiated successfully."
 
@@ -113,6 +141,7 @@ jobs:
 
           echo "Deploying kube-prometheus-stack..."
           helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+            --version 92.17.0 \
             --namespace monitoring \
             --create-namespace \
             --values "$GITHUB_WORKSPACE/monitoring/prometheus-values.yaml"
@@ -148,10 +177,24 @@ jobs:
 
           echo "Deploying Holmes..."
           helm upgrade --install holmes robusta/holmes \
+            --version 0.45.0 \
             --namespace monitoring \
             --values "$GITHUB_WORKSPACE/monitoring/holmes-values.yaml"
 
           echo "Holmes deployed successfully."
+
+      - name: Deploy alert receiver
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROLE_ARN="$(terraform output -raw alert_receiver_role_arn)"
+          BUCKET="$(terraform output -raw alert_results_bucket)"
+          IMAGE="$(terraform output -raw alert_receiver_image)"
+          sed -e "s|ALERT_RECEIVER_ROLE_ARN|$ROLE_ARN|g" \
+              -e "s|ALERT_RESULTS_BUCKET|$BUCKET|g" \
+              -e "s|ALERT_RECEIVER_IMAGE|$IMAGE|g" \
+              "$GITHUB_WORKSPACE/monitoring/alert-receiver.yaml" | kubectl apply -f -
+          kubectl rollout status deployment/alert-receiver -n monitoring --timeout=180s
 
       # 12. 클러스터 상태 검증 및 Step Summary 작성
       - name: Output Connection Guide & Summary
