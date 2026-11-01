@@ -83,6 +83,8 @@ jobs:
       # 7. Kubernetes가 생성한 AWS ELB/ENI/보안 그룹을 EKS 삭제 전에 정리
       - name: Delete Kubernetes LoadBalancer Services
         shell: bash
+        env:
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
         run: |
           set -euo pipefail
 
@@ -174,34 +176,109 @@ jobs:
 
           echo "EKS cluster '$CLUSTER_NAME' status: $EKS_STATUS"
 
+          # 1) GitHub Actions 역할에 EKS Access Entry가 누락되어 있을 경우(로컬에서 생성된 클러스터 등)
+          # kubectl 권한 오류(Unauthorized)가 발생하지 않도록 Access Entry를 사전 등록합니다.
+          if [ -n "${AWS_ROLE_ARN:-}" ]; then
+            echo "Ensuring EKS access entry for GitHub Actions role..."
+            aws eks create-access-entry \
+              --region ap-northeast-2 \
+              --cluster-name "$CLUSTER_NAME" \
+              --principal-arn "$AWS_ROLE_ARN" \
+              --type STANDARD 2>/dev/null || true
+
+            aws eks associate-access-policy \
+              --region ap-northeast-2 \
+              --cluster-name "$CLUSTER_NAME" \
+              --principal-arn "$AWS_ROLE_ARN" \
+              --policy-arn "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy" \
+              --access-scope type=cluster 2>/dev/null || true
+          fi
+
           aws eks update-kubeconfig \
             --region ap-northeast-2 \
             --name "$CLUSTER_NAME"
 
-          if [ "$(kubectl auth can-i delete services --all-namespaces)" != "yes" ]; then
-            echo "GitHub Actions role cannot delete Kubernetes Services."
-            echo "Stopping before terraform destroy to avoid orphaning AWS load balancers."
+          CAN_DELETE_SERVICES="no"
+          if kubectl auth can-i delete services --all-namespaces >/dev/null 2>&1; then
+            CAN_DELETE_SERVICES="$(kubectl auth can-i delete services --all-namespaces 2>/dev/null || echo 'no')"
+          fi
+
+          if [ "$CAN_DELETE_SERVICES" = "yes" ]; then
+            LOAD_BALANCER_SERVICES="$(
+              kubectl get services --all-namespaces \
+                -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
+            )"
+
+            if [ -n "$LOAD_BALANCER_SERVICES" ]; then
+              while read -r namespace service; do
+                [ -z "$service" ] && continue
+                echo "Deleting LoadBalancer Service: $namespace/$service"
+                kubectl delete service "$service" \
+                  --namespace "$namespace" \
+                  --wait=true \
+                  --timeout=10m
+              done <<< "$LOAD_BALANCER_SERVICES"
+            else
+              echo "No Kubernetes LoadBalancer Services found via kubectl."
+            fi
+          else
+            echo "Warning: GitHub Actions role cannot delete Kubernetes Services via kubectl."
+            echo "Checking AWS APIs directly for orphaned LoadBalancers..."
+          fi
+
+          # 2) 최종 안전장치: AWS ELB API를 직접 조회하여 클러스터에 바인딩된 잔여 로드밸런서가 있는지 확인
+          ORPHANED_LOAD_BALANCERS=()
+
+          CLASSIC_LOAD_BALANCERS="$(
+            aws elb describe-load-balancers \
+              --region ap-northeast-2 \
+              --query 'LoadBalancerDescriptions[].LoadBalancerName' \
+              --output text 2>/dev/null || true
+          )"
+
+          for load_balancer in ${CLASSIC_LOAD_BALANCERS//$'\t'/ }; do
+            [ -z "$load_balancer" ] || [ "$load_balancer" = "None" ] && continue
+            cluster_tag="$(
+              aws elb describe-tags \
+                --region ap-northeast-2 \
+                --load-balancer-names "$load_balancer" \
+                --query "TagDescriptions[0].Tags[?Key=='kubernetes.io/cluster/${CLUSTER_NAME}'].Value | [0]" \
+                --output text 2>/dev/null || true
+            )"
+            if [ "$cluster_tag" = "owned" ] || [ "$cluster_tag" = "shared" ]; then
+              ORPHANED_LOAD_BALANCERS+=("classic/$load_balancer")
+            fi
+          done
+
+          LOAD_BALANCER_ARNS="$(
+            aws elbv2 describe-load-balancers \
+              --region ap-northeast-2 \
+              --query 'LoadBalancers[].LoadBalancerArn' \
+              --output text 2>/dev/null || true
+          )"
+
+          for load_balancer_arn in ${LOAD_BALANCER_ARNS//$'\t'/ }; do
+            [ -z "$load_balancer_arn" ] || [ "$load_balancer_arn" = "None" ] && continue
+            cluster_tag="$(
+              aws elbv2 describe-tags \
+                --region ap-northeast-2 \
+                --resource-arns "$load_balancer_arn" \
+                --query "TagDescriptions[0].Tags[?Key=='kubernetes.io/cluster/${CLUSTER_NAME}'].Value | [0]" \
+                --output text 2>/dev/null || true
+            )"
+            if [ "$cluster_tag" = "owned" ] || [ "$cluster_tag" = "shared" ]; then
+              ORPHANED_LOAD_BALANCERS+=("v2/$load_balancer_arn")
+            fi
+          done
+
+          if [ "${#ORPHANED_LOAD_BALANCERS[@]}" -gt 0 ]; then
+            echo "Orphaned Kubernetes load balancers detected:" >&2
+            printf '  - %s\n' "${ORPHANED_LOAD_BALANCERS[@]}" >&2
+            echo "Stopping before terraform destroy. Remove the tagged owner resources through the recovery procedure." >&2
             exit 1
           fi
 
-          LOAD_BALANCER_SERVICES="$(
-            kubectl get services --all-namespaces \
-              -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}'
-          )"
-
-          if [ -z "$LOAD_BALANCER_SERVICES" ]; then
-            echo "No Kubernetes LoadBalancer Services found."
-            exit 0
-          fi
-
-          while read -r namespace service; do
-            [ -z "$service" ] && continue
-            echo "Deleting LoadBalancer Service: $namespace/$service"
-            kubectl delete service "$service" \
-              --namespace "$namespace" \
-              --wait=true \
-              --timeout=10m
-          done <<< "$LOAD_BALANCER_SERVICES"
+          echo "No orphaned load balancers found for '$CLUSTER_NAME'; continuing terraform destroy."
 
       # 8. EKS 및 인프라 전체 자동 삭제 (과금 방어)
       - name: Terraform Destroy
