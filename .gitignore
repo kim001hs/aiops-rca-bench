@@ -34,3 +34,5 @@ gha-creds-*.json
 benchmark/live-kubeconfig
 benchmark/results/*
 !benchmark/results/.gitkeep
+.agent/
+.agents/
