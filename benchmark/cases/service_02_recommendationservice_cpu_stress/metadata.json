@@ -3,6 +3,7 @@
   "category": "resource",
   "title": "Recommendationservice High CPU Usage (CPU Stress)",
   "namespace": "onlineboutique",
+  "expected_alert": {"names": ["ServiceHighCpuUsage"], "service": "recommendationservice", "service_labels": ["pod"]},
   "query": "There is a performance degradation and high CPU alert in the onlineboutique shopping mall. Users report degraded performance when browsing product recommendations. Check the pods, deployments, and metrics in namespace 'onlineboutique' (e.g. using 'kubectl top pods -n onlineboutique', 'kubectl get pods -n onlineboutique', and Prometheus metrics) to find the root cause. Identify the root cause component, fault type, and provide evidence.",
   "ground_truth": {
     "root_cause_component": "recommendationservice",

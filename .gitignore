@@ -31,3 +31,6 @@ gha-creds-*.json
 .env
 .env.*
 !.env.example
+benchmark/live-kubeconfig
+benchmark/results/*
+!benchmark/results/.gitkeep
