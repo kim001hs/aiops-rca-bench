@@ -69,19 +69,21 @@ spec:
               - ALL
           privileged: false
           readOnlyRootFilesystem: true
-        image: {{ .Values.images.repository }}/{{ .Values.paymentService.name }}:{{ .Values.images.tag | default .Chart.AppVersion }}
+        image: {{ .Values.paymentService.image | default (printf "%s/%s:%s" .Values.images.repository .Values.paymentService.name (.Values.images.tag | default .Chart.AppVersion)) }}
         ports:
         - containerPort: 50051
         env:
         - name: PORT
           value: "50051"
-        {{- if .Values.opentelemetryCollector.create }}
+        - name: BENCHMARK_CHARGE_DELAY_MS
+          value: {{ .Values.paymentService.benchmarkChargeDelayMs | quote }}
+        {{- if or .Values.opentelemetryCollector.create .Values.benchmarkTracing.enabled }}
         - name: COLLECTOR_SERVICE_ADDR
           value: "{{ .Values.opentelemetryCollector.name }}:4317"
         - name: OTEL_SERVICE_NAME
           value: "{{ .Values.paymentService.name }}"
         {{- end }}
-        {{- if .Values.googleCloudOperations.tracing }}
+        {{- if or .Values.googleCloudOperations.tracing .Values.benchmarkTracing.enabled }}
         - name: ENABLE_TRACING
           value: "1"
         {{- end }}

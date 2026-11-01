@@ -1,0 +1,14 @@
+# Both benchmark arms use this same Tempo installation. Ephemeral storage is
+# intentional for a short benchmark; retain S3 diagnosis results separately.
+tempo:
+  reportingEnabled: false
+  retention: 24h
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+persistence:
+  enabled: false
+service:
+  type: ClusterIP

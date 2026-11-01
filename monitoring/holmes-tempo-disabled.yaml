@@ -1,0 +1,3 @@
+toolsets:
+  grafana/tempo:
+    enabled: false

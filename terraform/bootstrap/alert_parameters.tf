@@ -15,3 +15,15 @@ resource "aws_ssm_parameter" "cartservice_benchmark_repository" {
   type  = "String"
   value = aws_ecr_repository.cartservice_benchmark.repository_url
 }
+
+resource "aws_ssm_parameter" "paymentservice_benchmark_repository" {
+  name  = "/${var.project_name}/paymentservice-benchmark-repository"
+  type  = "String"
+  value = aws_ecr_repository.paymentservice_benchmark.repository_url
+}
+
+resource "aws_ssm_parameter" "order_probe_repository" {
+  name  = "/${var.project_name}/order-probe-repository"
+  type  = "String"
+  value = aws_ecr_repository.order_probe.repository_url
+}

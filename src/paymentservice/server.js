@@ -39,14 +39,21 @@ class HipsterShopServer {
    * @param {*} callback  fn(err, ChargeResponse)
    */
   static ChargeServiceHandler(call, callback) {
-    try {
+    const delay = Number(process.env.BENCHMARK_CHARGE_DELAY_MS || '0');
+    if (!Number.isInteger(delay) || delay < 0 || delay > 10000) {
+      callback(new Error('BENCHMARK_CHARGE_DELAY_MS must be an integer from 0 to 10000'));
+      return;
+    }
+    const execute = () => { try {
       logger.info(`PaymentService#Charge invoked with request ${JSON.stringify(call.request)}`);
       const response = charge(call.request);
       callback(null, response);
     } catch (err) {
       console.warn(err);
       callback(err);
-    }
+    }};
+    if (delay) setTimeout(execute, delay);
+    else execute();
   }
 
   static CheckHandler(call, callback) {

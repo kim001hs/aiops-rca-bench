@@ -84,9 +84,13 @@ jobs:
           BUCKET="$(aws ssm get-parameter --name /msa-demo/alert-results-bucket --query Parameter.Value --output text)"
           REPO="$(aws ssm get-parameter --name /msa-demo/alert-receiver-repository --query Parameter.Value --output text)"
           CART_REPO="$(aws ssm get-parameter --name /msa-demo/cartservice-benchmark-repository --query Parameter.Value --output text)"
+          PAYMENT_REPO="$(aws ssm get-parameter --name /msa-demo/paymentservice-benchmark-repository --query Parameter.Value --output text)"
+          PROBE_REPO="$(aws ssm get-parameter --name /msa-demo/order-probe-repository --query Parameter.Value --output text)"
           echo "TF_VAR_alert_results_bucket=$BUCKET" >> "$GITHUB_ENV"
           echo "RECEIVER_REPO=$REPO" >> "$GITHUB_ENV"
           echo "CART_REPO=$CART_REPO" >> "$GITHUB_ENV"
+          echo "PAYMENT_REPO=$PAYMENT_REPO" >> "$GITHUB_ENV"
+          echo "PROBE_REPO=$PROBE_REPO" >> "$GITHUB_ENV"
 
       - name: Build and push alert receiver
         shell: bash
@@ -104,6 +108,15 @@ jobs:
           docker build -t "$CART_REPO:${GITHUB_SHA}" "$GITHUB_WORKSPACE/src/cartservice/src"
           docker push "$CART_REPO:${GITHUB_SHA}"
 
+      - name: Build and push benchmark paymentservice and order probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -t "$PAYMENT_REPO:${GITHUB_SHA}" "$GITHUB_WORKSPACE/src/paymentservice"
+          docker push "$PAYMENT_REPO:${GITHUB_SHA}"
+          docker build -f "$GITHUB_WORKSPACE/benchmark/order-probe.Dockerfile" -t "$PROBE_REPO:${GITHUB_SHA}" "$GITHUB_WORKSPACE/benchmark"
+          docker push "$PROBE_REPO:${GITHUB_SHA}"
+
       # 8. EKS 클러스터 및 인프라 프로비저닝 (약 10~15분 소요)
       - name: Terraform Apply
         run: terraform apply -auto-approve -lock-timeout=10m
@@ -118,11 +131,36 @@ jobs:
           echo "Configuring kubectl for cluster: $CLUSTER_NAME"
           aws eks update-kubeconfig --region ap-northeast-2 --name "$CLUSTER_NAME"
 
+          helm repo add grafana-community https://grafana-community.github.io/helm-charts
+          helm repo update
+          helm upgrade --install tempo grafana-community/tempo --version 3.2.1 --namespace monitoring --create-namespace \
+            --values "$GITHUB_WORKSPACE/monitoring/tempo-values.yaml"
+          kubectl rollout status statefulset/tempo -n monitoring --timeout=180s
+
           echo "Deploying Online Boutique Helm chart..."
+          CART_HELM_ARGS=()
+          if kubectl get deployment cartservice -n onlineboutique >/dev/null 2>&1; then
+            CART_MEMORY_REQUEST="$(kubectl get deployment cartservice -n onlineboutique -o jsonpath='{.spec.template.spec.containers[?(@.name=="server")].resources.requests.memory}')"
+            CART_MEMORY_LIMIT="$(kubectl get deployment cartservice -n onlineboutique -o jsonpath='{.spec.template.spec.containers[?(@.name=="server")].resources.limits.memory}')"
+            if [ -n "$CART_MEMORY_REQUEST" ] && [ -n "$CART_MEMORY_LIMIT" ]; then
+              CART_HELM_ARGS+=(--set "cartService.resources.requests.memory=$CART_MEMORY_REQUEST")
+              CART_HELM_ARGS+=(--set "cartService.resources.limits.memory=$CART_MEMORY_LIMIT")
+            fi
+          fi
           helm upgrade --install onlineboutique "$GITHUB_WORKSPACE/helm-chart" \
             --namespace onlineboutique \
             --create-namespace \
-            --set-string "cartService.image=$CART_REPO:${GITHUB_SHA}"
+            --set-string "cartService.image=$CART_REPO:${GITHUB_SHA}" \
+            --set-string "paymentService.image=$PAYMENT_REPO:${GITHUB_SHA}" \
+            --set benchmarkTracing.enabled=true \
+            "${CART_HELM_ARGS[@]}"
+          kubectl rollout status deployment/opentelemetrycollector -n onlineboutique --timeout=180s
+
+          ACTUAL_IMAGE="$(kubectl get deployment cartservice -n onlineboutique -o jsonpath='{.spec.template.spec.containers[?(@.name=="server")].image}')"
+          if [ "$ACTUAL_IMAGE" != "$CART_REPO:${GITHUB_SHA}" ]; then
+            echo "cartservice image mismatch: expected $CART_REPO:${GITHUB_SHA}, got $ACTUAL_IMAGE" >&2
+            exit 1
+          fi
 
           echo "Online Boutique deployment initiated successfully."
 
@@ -146,8 +184,18 @@ jobs:
             --create-namespace \
             --values "$GITHUB_WORKSPACE/monitoring/prometheus-values.yaml"
 
+          sed "s|ORDER_PROBE_IMAGE|$PROBE_REPO:${GITHUB_SHA}|g" \
+            "$GITHUB_WORKSPACE/monitoring/order-probe.yaml" | kubectl apply -f -
+          kubectl rollout status deployment/order-probe -n monitoring --timeout=180s
+
           echo "Applying Benchmark Fast Alert Rules (Cases 01~04)..."
           kubectl apply -f "$GITHUB_WORKSPACE/monitoring/benchmark-rules.yaml"
+
+          ACTUAL_RULE="$(kubectl get prometheusrule benchmark-fast-alerts -n monitoring -o jsonpath='{.spec.groups[*].rules[?(@.alert=="ServicePodNotHealthy")].expr}')"
+          if [[ "$ACTUAL_RULE" != *'and on(namespace, pod)'* ]]; then
+            echo "ServicePodNotHealthy is missing the namespace/pod vector match" >&2
+            exit 1
+          fi
 
           echo "Monitoring stack and benchmark alert rules deployed successfully."
 
@@ -179,7 +227,8 @@ jobs:
           helm upgrade --install holmes robusta/holmes \
             --version 0.45.0 \
             --namespace monitoring \
-            --values "$GITHUB_WORKSPACE/monitoring/holmes-values.yaml"
+            --values "$GITHUB_WORKSPACE/monitoring/holmes-values.yaml" \
+            --values "$GITHUB_WORKSPACE/monitoring/holmes-tempo-disabled.yaml"
 
           echo "Holmes deployed successfully."
 
