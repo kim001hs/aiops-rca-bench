@@ -117,7 +117,10 @@ jobs:
             --create-namespace \
             --values "$GITHUB_WORKSPACE/monitoring/prometheus-values.yaml"
 
-          echo "Monitoring stack deployed successfully."
+          echo "Applying Benchmark Fast Alert Rules (Cases 01~04)..."
+          kubectl apply -f "$GITHUB_WORKSPACE/monitoring/benchmark-rules.yaml"
+
+          echo "Monitoring stack and benchmark alert rules deployed successfully."
 
       # 11. HolmesGPT 자율 조사 에이전트 배포
       - name: Deploy HolmesGPT Agent
