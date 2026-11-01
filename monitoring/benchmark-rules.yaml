@@ -10,6 +10,17 @@ spec:
   groups:
     - name: benchmark.microservices.rules
       rules:
+        - alert: OrderResponseSlow
+          expr: (sum(increase(order_probe_duration_seconds_count{outcome="success"}[1m])) >= 3) and (sum(increase(order_probe_duration_seconds_bucket{outcome="success",le="0.9"}[1m])) / sum(increase(order_probe_duration_seconds_count{outcome="success"}[1m])) < 0.2)
+          for: 15s
+          labels:
+            severity: warning
+            namespace: onlineboutique
+            service: orders
+          annotations:
+            summary: "Observed order response latency is high"
+            description: "Fewer than 20% of successful observed orders completed within 0.9 seconds during the last minute."
+
         # [Case 01] 레플리카 0 / 서비스 다운 (cartservice scale=0 대응)
         - alert: ServiceDeploymentUnavailable
           expr: kube_deployment_status_replicas_available{namespace="onlineboutique"} == 0

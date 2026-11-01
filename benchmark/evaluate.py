@@ -68,6 +68,7 @@ def run_single_judge(report_text: str, metadata: dict, judge_model: str) -> dict
 - Expected Fault Type: {target_fault}
 - Ground Truth Context: {json.dumps(gt, ensure_ascii=False)}
 - Key Diagnostic Evidence Expectations: {json.dumps(req_ev, ensure_ascii=False)}
+- Case-specific scoring note: {criteria.get('scoring_note', 'None')}
 
 [Candidate Diagnostic Report to Grade]
 {report_text}
@@ -77,6 +78,8 @@ def run_single_judge(report_text: str, metadata: dict, judge_model: str) -> dict
 2. evidence_score (0~30): Did the report provide convincing, factual evidence (metrics, logs, events, timestamps, restarts, resource limits)?
 3. remediation_score (0~20): Did the report propose logical, actionable, and practical engineering solutions or recovery steps?
 4. factual_accuracy_score (0~20): Is the report free of hallucinations, false attributions, or fabricated errors?
+For the order-latency case, give full evidence credit to independently sufficient logs or metrics; trace use is not required for points. Do not treat an unobserved internal cause as known.
+For that case, cap factual_accuracy_score at 10/20 if the report suggests an unobserved internal, network, or external dependency as a likely cause, even when hedged. Do not mistake the percentage of orders under the latency threshold for order success rate.
 
 Respond ONLY with a valid JSON object strictly matching this schema:
 {{
@@ -291,6 +294,10 @@ def evaluate_version(
             "alert_starts_at": run_info.get("alert_starts_at"),
             "s3_key": run_info.get("s3_key"),
             "s3_uri": run_info.get("s3_uri"),
+            "holmes_tempo_used": run_info.get("holmes_tempo_used"),
+            "linked_order_trace_ids": run_info.get("linked_order_trace_ids", []),
+            "baseline_orders": run_info.get("baseline_orders"),
+            "injected_orders": run_info.get("injected_orders"),
             "timestamp": datetime.now().isoformat(),
             "judge_model": judge_model,
             "report_sha256": report_hash,
@@ -390,6 +397,13 @@ def evaluate_version(
             },
             "Feedback": judge_res["judge_feedback"],
         }
+        if case_id == "service_05_order_latency":
+            scorecard["Tempo_Comparison"] = {
+                "Holmes_Tempo_Used": run_info.get("holmes_tempo_used"),
+                "Linked_Order_Trace_IDs": run_info.get("linked_order_trace_ids", []),
+                "Order_Samples_Before": run_info.get("baseline_orders", []),
+                "Order_Samples_After": run_info.get("injected_orders", []),
+            }
         with open(sc_file, "w", encoding="utf-8") as f:
             json.dump(scorecard, f, indent=2, ensure_ascii=False)
 

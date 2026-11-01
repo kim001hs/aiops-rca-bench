@@ -1,0 +1,5 @@
+toolsets:
+  grafana/tempo:
+    enabled: true
+    config:
+      api_url: http://tempo.monitoring.svc.cluster.local:3200

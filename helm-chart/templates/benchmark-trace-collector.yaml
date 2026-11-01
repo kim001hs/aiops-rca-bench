@@ -1,0 +1,77 @@
+{{- if .Values.benchmarkTracing.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: benchmark-trace-collector
+  namespace: {{ .Release.Namespace }}
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+    processors:
+      batch: {}
+    exporters:
+      otlp/tempo:
+        endpoint: {{ .Values.benchmarkTracing.tempoEndpoint | quote }}
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlp/tempo]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.opentelemetryCollector.name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Values.opentelemetryCollector.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.opentelemetryCollector.name }}
+      annotations:
+        checksum/config: {{ .Values.benchmarkTracing.tempoEndpoint | sha256sum }}
+    spec:
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.158.0
+          args: ["--config=/etc/otel/config.yaml"]
+          ports:
+            - containerPort: 4317
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: benchmark-trace-collector
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.opentelemetryCollector.name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: {{ .Values.opentelemetryCollector.name }}
+  ports:
+    - name: grpc-otlp
+      port: 4317
+      targetPort: 4317
+{{- end }}

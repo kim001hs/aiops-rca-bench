@@ -24,9 +24,32 @@ def alert(name, service="cartservice", fingerprint="abc", started="2026-11-01T00
 
 class CollectionTests(unittest.TestCase):
     def setUp(self):
+        with receiver.CLAIMS_LOCK:
+            receiver.ACTIVE_CLAIMS.clear()
         self.meta = {"namespace": "onlineboutique", "expected_alert": {
             "names": ["ServiceContainerOOMKilled", "ServicePodNotHealthy"],
             "service": "cartservice", "service_labels": ["pod"]}}
+
+    def test_case04_prerequisites_reject_stock_image_and_stale_rule(self):
+        metadata = {"case_id": "service_04_cartservice_redis_misconfig", "namespace": "onlineboutique"}
+        deployment = {"spec": {"template": {"spec": {"containers": [{"name": "server",
+            "image": "public/cartservice:v1", "readinessProbe": {"grpc": {"service": "readiness"}},
+            "livenessProbe": {"grpc": {"service": "liveness"}}}]}}}}
+        rules = {"spec": {"groups": [{"rules": [{"alert": "ServicePodNotHealthy",
+            "expr": "ready == 0 and phase > 0"}]}]}}
+        def response(data):
+            return MagicMock(returncode=0, stdout=json.dumps(data))
+        with patch.object(collect.subprocess, "run", side_effect=[response(deployment)]) as run:
+            with self.assertRaisesRegex(RuntimeError, "cartservice-benchmark image"):
+                collect.check_case_prerequisites(metadata)
+            self.assertEqual(run.call_count, 1)
+        deployment["spec"]["template"]["spec"]["containers"][0]["image"] = "ecr/cartservice-benchmark:sha"
+        with patch.object(collect.subprocess, "run", side_effect=[response(deployment), response(rules)]):
+            with self.assertRaisesRegex(RuntimeError, "on\\(namespace, pod\\)"):
+                collect.check_case_prerequisites(metadata)
+        rules["spec"]["groups"][0]["rules"][0]["expr"] = "ready == 0 and on(namespace, pod) phase > 0"
+        with patch.object(collect.subprocess, "run", side_effect=[response(deployment), response(rules)]):
+            collect.check_case_prerequisites(metadata)
 
     def test_old_and_unrelated_alerts_are_excluded(self):
         old = alert("ServiceContainerOOMKilled")
@@ -77,7 +100,9 @@ class CollectionTests(unittest.TestCase):
         candidate = alert("ServiceContainerOOMKilled")
         candidate["status"] = "firing"
         from botocore.exceptions import ClientError
-        with patch.object(receiver, "s3") as s3, patch.object(receiver, "diagnose", return_value={"analysis": "원인"}) as diagnose:
+        not_found = ClientError({"Error": {"Code": "404"}}, "HeadObject")
+        with patch.object(receiver, "s3") as s3, patch.object(receiver, "diagnose", return_value=({"analysis": "원인"}, [])) as diagnose:
+            s3.head_object.side_effect = [not_found, None]
             s3.put_object.side_effect = [None, None,
                                          ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")]
             self.assertEqual(receiver.process_alert(candidate), "succeeded")
@@ -86,7 +111,9 @@ class CollectionTests(unittest.TestCase):
 
     def test_diagnosis_failure_is_persisted(self):
         candidate = alert("ServiceContainerOOMKilled")
+        from botocore.exceptions import ClientError
         with patch.object(receiver, "s3") as s3, patch.object(receiver, "diagnose", side_effect=TimeoutError("Holmes timeout")):
+            s3.head_object.side_effect = ClientError({"Error": {"Code": "404"}}, "HeadObject")
             self.assertEqual(receiver.process_alert(candidate), "failed")
             body = json.loads(s3.put_object.call_args_list[1].kwargs["Body"])
             self.assertEqual(body["status"], "failed")
@@ -95,7 +122,8 @@ class CollectionTests(unittest.TestCase):
         candidate = alert("ServiceContainerOOMKilled")
         from botocore.exceptions import ClientError
         write_error = ClientError({"Error": {"Code": "InternalError"}}, "PutObject")
-        with patch.object(receiver, "s3") as s3, patch.object(receiver, "diagnose", return_value={"analysis": "원인"}):
+        with patch.object(receiver, "s3") as s3, patch.object(receiver, "diagnose", return_value=({"analysis": "원인"}, [])):
+            s3.head_object.side_effect = ClientError({"Error": {"Code": "404"}}, "HeadObject")
             s3.put_object.side_effect = [None, write_error]
             with self.assertRaises(ClientError):
                 receiver.process_alert(candidate)

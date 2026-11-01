@@ -1,0 +1,26 @@
+{
+  "case_id": "service_05_order_latency",
+  "category": "latency",
+  "title": "Observed order response latency",
+  "namespace": "onlineboutique",
+  "expected_alert": {
+    "names": ["OrderResponseSlow"],
+    "service": "orders",
+    "service_labels": ["service"]
+  },
+  "ground_truth": {
+    "root_cause_component": "paymentservice.Charge call interval",
+    "fault_type": "consistent approximately 1 second added latency per call",
+    "symptom": "successful orders have slower measured frontend responses",
+    "internal_cause": "unknown from observability evidence"
+  },
+  "evaluation_criteria": {
+    "target_component": "paymentservice.Charge call interval",
+    "target_fault_type": "consistent call latency",
+    "required_evidence": [
+      "Observed successful order response durations and timestamps",
+      "A measured paymentservice.Charge span or another directly observed timing of the payment call"
+    ],
+    "scoring_note": "Grade accurate attribution to the slow paymentservice.Charge interval, not a speculative internal cause. Logs and metrics can earn full evidence credit if they independently establish the interval. Trace usage is recorded separately, not required for points. An assertion that internal code, network, or external dependencies are likely causes without direct evidence is unsupported even when hedged as a possibility; deduct factual accuracy. An investigation recommendation is not a causal assertion. Distinguish the fraction under 0.9 seconds from the actual order success rate."
+  }
+}

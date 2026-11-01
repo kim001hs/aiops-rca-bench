@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-probe
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-probe
+  template:
+    metadata:
+      labels:
+        app: order-probe
+    spec:
+      containers:
+        - name: probe
+          image: ORDER_PROBE_IMAGE
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-probe
+  namespace: monitoring
+  labels:
+    app: order-probe
+spec:
+  selector:
+    app: order-probe
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: order-probe
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: order-probe
+  namespaceSelector:
+    matchNames: [monitoring]
+  endpoints:
+    - port: http
+      interval: 15s

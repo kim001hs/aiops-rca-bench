@@ -47,6 +47,10 @@ opentelemetryCollector:
   # Specifies the project id for the otel collector. If set as "PROJECT_ID" (default value), an initContainer will automatically retrieve the project id value from the metadata server.
   projectId: "PROJECT_ID"
 
+benchmarkTracing:
+  enabled: false
+  tempoEndpoint: tempo.monitoring.svc.cluster.local:4317
+
 googleCloudOperations:
   profiler: false
   tracing: false
@@ -155,6 +159,8 @@ loadGenerator:
 paymentService:
   create: true
   name: paymentservice
+  image: ""
+  benchmarkChargeDelayMs: 0
   resources:
     requests:
       cpu: 100m

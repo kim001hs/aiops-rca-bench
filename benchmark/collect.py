@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.request
@@ -12,6 +13,7 @@ from pathlib import Path
 from runner import (cleanup_fault, ensure_alertmanager_portforward, inject_fault,
                     precheck_cluster)
 from usage_display import usage_lines
+import order_case
 
 
 def alert_identity(alert):
@@ -25,6 +27,35 @@ def alert_identity(alert):
 def get_active_alerts(url):
     with urllib.request.urlopen(f"{url.rstrip('/')}/api/v2/alerts", timeout=5) as response:
         return [a for a in json.load(response) if a.get("status", {}).get("state") == "active"]
+
+
+def check_case_prerequisites(metadata):
+    """Case 04 needs the Redis-aware cartservice image and the corrected alert rule."""
+    if metadata["case_id"] != "service_04_cartservice_redis_misconfig":
+        return
+
+    def kubectl_json(*args):
+        result = subprocess.run(["kubectl", *args, "-o", "json"], capture_output=True, text=True)
+        if result.returncode:
+            raise RuntimeError(f"case 04 prerequisite check failed: kubectl {' '.join(args)}: {result.stderr.strip()}")
+        return json.loads(result.stdout)
+
+    deployment = kubectl_json("get", "deployment", "cartservice", "-n", metadata["namespace"])
+    container = next((item for item in deployment["spec"]["template"]["spec"]["containers"]
+                      if item["name"] == "server"), None)
+    if not container or "cartservice-benchmark" not in container.get("image", ""):
+        raise RuntimeError("case 04 requires the cartservice-benchmark image with a Redis-aware health check")
+    if container.get("readinessProbe", {}).get("grpc", {}).get("service") != "readiness":
+        raise RuntimeError("case 04 requires cartservice gRPC readiness probe service=readiness")
+    if container.get("livenessProbe", {}).get("grpc", {}).get("service") != "liveness":
+        raise RuntimeError("case 04 requires cartservice gRPC liveness probe service=liveness")
+
+    rules = kubectl_json("get", "prometheusrule", "benchmark-fast-alerts", "-n", "monitoring")
+    health_rules = [rule for group in rules["spec"]["groups"] for rule in group["rules"]
+                    if rule.get("alert") == "ServicePodNotHealthy"]
+    if len(health_rules) != 1 or not re.search(r"\band\s+on\s*\(\s*namespace\s*,\s*pod\s*\)",
+                                                 health_rules[0]["expr"]):
+        raise RuntimeError("case 04 requires ServicePodNotHealthy to match readiness and phase on(namespace, pod)")
 
 
 def matches(alert, metadata):
@@ -120,6 +151,12 @@ def holmes_usage_text(result):
     return f"## 진단 리소스 사용량\n\n- **집계 범위**: {scope}\n{usage_lines(usage, costs.get('total_cost'))}"
 
 
+def used_tempo_tool(result):
+    calls = (result.get("holmesResponse") or {}).get("tool_calls") or []
+    return any(isinstance(call, dict) and call.get("tool_name", "").startswith("tempo_")
+               for call in calls)
+
+
 def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout, result_timeout,
             version="v1", draft=False):
     import boto3
@@ -127,6 +164,8 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
     state = {"status": "started", "case_id": metadata["case_id"], "version": version,
              "draft": draft, "run": int(run_dir.name), "startedAt": datetime.now(timezone.utc).isoformat()}
     injected = False
+    order_case_run = metadata["case_id"] == "service_05_order_latency"
+    original_delay = None
     port_forwards = []
     try:
         pf, alertmanager_url = ensure_alertmanager_portforward(alertmanager_url)
@@ -134,10 +173,25 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
             port_forwards.append(pf)
         if not precheck_cluster(metadata["namespace"]):
             raise RuntimeError("precheck failed")
+        check_case_prerequisites(metadata)
+        if order_case_run:
+            original_delay = order_case.original_delay(metadata["namespace"])
+            baseline_orders, baseline_metrics = order_case.order_samples()
+            state["baseline_orders"] = baseline_orders
+            (run_dir / "baseline_metrics.prom").write_text(baseline_metrics, encoding="utf-8")
+            order_case.require_valid(baseline_orders, maximum=0.9)
         baseline = {alert_identity(a) for a in get_active_alerts(alertmanager_url)}
+        if order_case_run and any(matches(a, metadata) for a in get_active_alerts(alertmanager_url)):
+            raise ValueError("invalid experiment: order latency alert already firing before injection")
         state["baseline_alerts"] = [list(item) for item in sorted(baseline)]
         injected = True  # cleanup even when the injection script partially succeeds
-        if not inject_fault(case_dir):
+        if order_case_run:
+            order_case.set_delay(metadata["namespace"], "1000")
+            injected_orders, injected_metrics = order_case.order_samples()
+            state["injected_orders"] = injected_orders
+            (run_dir / "injected_metrics.prom").write_text(injected_metrics, encoding="utf-8")
+            order_case.require_valid(injected_orders, minimum=1.0)
+        elif not inject_fault(case_dir):
             raise RuntimeError("fault injection failed")
         def reconnect_alertmanager():
             new_pf, _ = ensure_alertmanager_portforward(alertmanager_url)
@@ -158,6 +212,17 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
         state["s3_key"] = key
         state["s3_uri"] = f"s3://{bucket}/{key}"
         state["MTTI / TTD (Diagnosis Time, sec)"] = result.get("diagnosisDurationSeconds")
+        if order_case_run:
+            start = datetime.fromisoformat(state["startedAt"]).timestamp() - 30
+            end = datetime.now(timezone.utc).timestamp() + 30
+            try:
+                traces = order_case.tempo_search(start, end)
+                (run_dir / "tempo_search.json").write_text(json.dumps(traces, indent=2), encoding="utf-8")
+                state["tempo_trace_count"] = len(traces.get("traces", []))
+                state["linked_order_trace_ids"] = traces.get("linked_order_trace_ids", [])
+            except Exception as exc:
+                state["tempo_search_error"] = str(exc)
+            state["holmes_tempo_used"] = used_tempo_tool(result)
         (run_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         if result.get("status") != "succeeded":
             state["status"] = "diagnosis_failed"
@@ -171,13 +236,36 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
         state["status"] = "collected"
     except Exception as exc:
         if state["status"] == "started":
-            state["status"] = "s3_timeout" if isinstance(exc, TimeoutError) else "failed"
+            state["status"] = ("invalid_experiment" if order_case_run and isinstance(exc, ValueError)
+                               else "s3_timeout" if isinstance(exc, TimeoutError) else "failed")
         state["error"] = str(exc)
     finally:
         if injected:
-            state["cleanup_success"] = cleanup_fault(case_dir, namespace=metadata["namespace"])
+            if order_case_run:
+                try:
+                    order_case.set_delay(metadata["namespace"], original_delay)
+                    state["cleanup_success"] = True
+                except Exception as exc:
+                    state["cleanup_success"] = False
+                    state["cleanup_error"] = str(exc)
+            else:
+                state["cleanup_success"] = cleanup_fault(case_dir, namespace=metadata["namespace"])
             if not state["cleanup_success"]:
                 state["status"] = "cleanup_failed"
+            elif order_case_run and state.get("selected_alert"):
+                deadline = time.monotonic() + 150
+                identity = alert_identity(state["selected_alert"])
+                while time.monotonic() < deadline:
+                    try:
+                        if identity not in {alert_identity(a) for a in get_active_alerts(alertmanager_url)}:
+                            state["alert_resolved"] = True
+                            break
+                    except OSError as exc:
+                        state["alert_resolution_error"] = str(exc)
+                    time.sleep(5)
+                else:
+                    state["alert_resolved"] = False
+                    state["status"] = "alert_not_resolved"
         for pf in port_forwards:
             pf.terminate()
         state["finishedAt"] = datetime.now(timezone.utc).isoformat()

@@ -92,13 +92,13 @@ spec:
           value: "{{ .Values.currencyService.name }}:7000"
         - name: CART_SERVICE_ADDR
           value: "{{ .Values.cartService.name }}:7070"
-        {{- if .Values.opentelemetryCollector.create }}
+        {{- if or .Values.opentelemetryCollector.create .Values.benchmarkTracing.enabled }}
         - name: COLLECTOR_SERVICE_ADDR
           value: "{{ .Values.opentelemetryCollector.name }}:4317"
         - name: OTEL_SERVICE_NAME
           value: "{{ .Values.checkoutService.name }}"
         {{- end }}
-        {{- if .Values.googleCloudOperations.tracing }}
+        {{- if or .Values.googleCloudOperations.tracing .Values.benchmarkTracing.enabled }}
         - name: ENABLE_TRACING
           value: "1"
         {{- end }}

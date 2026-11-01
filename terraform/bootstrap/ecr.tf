@@ -62,3 +62,15 @@ resource "aws_ecr_repository" "cartservice_benchmark" {
 output "cartservice_benchmark_repository_url" {
   value = aws_ecr_repository.cartservice_benchmark.repository_url
 }
+
+resource "aws_ecr_repository" "paymentservice_benchmark" {
+  name                 = "paymentservice-benchmark"
+  image_tag_mutability = "MUTABLE"
+  image_scanning_configuration { scan_on_push = true }
+}
+
+resource "aws_ecr_repository" "order_probe" {
+  name                 = "order-probe"
+  image_tag_mutability = "MUTABLE"
+  image_scanning_configuration { scan_on_push = true }
+}

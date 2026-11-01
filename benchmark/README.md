@@ -1,5 +1,22 @@
 # AWS 알람 진단 수집
 
+## Tempo 전후 주문 지연 비교
+
+`terraform/bootstrap`을 기존 상태에 적용해 `paymentservice-benchmark`와 `order-probe` ECR 저장소 및 SSM 매개변수를 만듭니다. `Terraform Apply` 워크플로우는 두 이미지를 빌드하고, Tempo, OTLP Collector, 세 서비스의 tracing, 주문 probe 및 `OrderResponseSlow` 규칙을 설치합니다. 두 실험군 모두 Tempo와 서비스 계측을 계속 실행합니다. 기본 Holmes 설정은 `monitoring/holmes-tempo-disabled.yaml`입니다. Tempo군은 Holmes 0.45.0의 `grafana/tempo` 도구만 활성화합니다.
+
+실험 전에 `kubectl get pods -n onlineboutique`, `kubectl get pods -n monitoring`과 `kubectl get servicemonitor order-probe -n monitoring`을 확인하세요. Prometheus에서 `order_probe_duration_seconds_count{outcome="success"}`가 증가하고 정상 주문이 0.9초 미만인지 확인해야 합니다. `kubectl port-forward svc/order-probe 8080:8080 -n monitoring` 후 `/probe`는 실제 주문의 성공 여부와 응답 시간을 JSON으로 반환합니다. `/metrics`는 성공/실패별 누적 히스토그램을 반환합니다. 정상 상태에서 `OrderResponseSlow`가 이미 firing이면 실험을 시작하지 않습니다.
+
+```sh
+python benchmark/tempo_compare.py --pairs 3 --bucket <bucket>
+python benchmark/evaluate.py --case service_05_order_latency --version baseline --run all
+python benchmark/evaluate.py --case service_05_order_latency --version tempo --run all
+python benchmark/compare_tempo.py
+```
+
+각 회차는 결제 Deployment의 원래 `BENCHMARK_CHARGE_DELAY_MS` 값을 보존한 후 1000으로 설정하고 롤아웃 완료를 기다립니다. 주문 성공과 1초 이상의 응답을 확인한 뒤 알람을 수집합니다. 수집 후 원래 값을 복원하고 해당 알람이 해소될 때까지 기다립니다. 주문이 실패하거나 지연 기준을 충족하지 못하면 `invalid_experiment`로 남기고 채점에서 제외합니다. 기준군과 Tempo군은 번갈아 실행되며 실패 회차가 있으면 시퀀스를 중단합니다.
+
+회차 폴더의 `run_info.json`에 원래/주입 후 주문 표본, 알람, 해소 여부, Tempo trace 수, 연결된 세 서비스 trace ID와 Holmes의 Tempo 도구 사용 여부가 있습니다. `baseline_metrics.prom`, `injected_metrics.prom`, `tempo_search.json`, S3 원본 `result.json`, `report.md`도 보존합니다. `evaluation.json`과 `scorecard.json`은 원인/증거/사실 정확도를 구분하고 trace 사용 여부를 별도 기록합니다. Tempo군에서는 연결된 trace가 있고 Holmes 도구 호출에 Tempo 조회가 있는지 확인한 뒤 비교 결과를 해석하세요. 지연의 내부 원인은 CPU, 네트워크, 결제망 등으로 단정하지 않습니다.
+
 Alertmanager는 `monitoring/alert-receiver.yaml`의 수신 서비스로 firing 웹훅을 보냅니다. 수신 서비스가 알람마다 Holmes `/api/chat`을 호출하고 한국어 지침을 `additional_system_prompt`로 전달합니다. 원본 알람, Holmes 응답, 시각 및 상태는 `s3://<bucket>/alerts/<UTC date>/<fingerprint>/<UTC startsAt>/result.json`에 보존됩니다. 웹훅 재전송은 같은 키의 `.claim` 객체로 중복 진단을 막습니다. 실패한 진단도 `status: failed`로 저장됩니다. 클러스터와 별도인 bootstrap Terraform 버킷은 공개 접근을 차단하고 자동 삭제를 막습니다.
 
 
@@ -30,6 +47,7 @@ S3 콘솔에서 `run_info.json`의 `s3_key` 경로를 따라가면 원본 `resul
 Holmes가 Gemini 크레딧 부족 등으로 실패하면 S3에는 `status: failed`가 남고 로컬 수집에는 점수를 만들지 않습니다. 같은 `fingerprint`와 `startsAt`은 재전송해도 다시 진단하지 않으므로, 외부 원인을 해결한 뒤 새 알람 발생 시각으로 확인해야 합니다. S3 결과 쓰기가 실패하면 `.claim`을 해제하고 웹훅에 오류를 반환해 재전송 시 진단을 다시 시도합니다.
 
 4번 Redis 주소 오류 실험은 `cartservice`의 Redis 접근 상태를 gRPC 헬스 체크로 확인합니다. 주소가 잘못되면 Pod 준비 상태가 실패하고 `ServicePodNotHealthy` 알람이 발생합니다. 해당 동작에는 워크플로우가 빌드한 `cartservice` 이미지가 필요합니다.
+실행 전 수집기는 배포 이미지에 `cartservice-benchmark`가 포함되는지, gRPC readiness/liveness 서비스가 각각 `readiness`/`liveness`인지, 클러스터 알람 규칙이 `and on(namespace, pod)`로 파드 상태를 결합하는지 확인합니다. 하나라도 다르면 장애를 주입하지 않고 원인을 기록합니다. 기존 bootstrap 상태에 맞춤 ECR 저장소가 없으면 먼저 bootstrap Terraform을 적용하고, 해당 코드로 `Terraform Apply` 워크플로우를 실행해야 합니다. 이전 `missing` 회차는 그대로 보존하고 새 회차로 다시 수집합니다.
 
 ## 실환경 확인
 
