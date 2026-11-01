@@ -65,19 +65,23 @@ resource "aws_eks_node_group" "main" {
 
 # NOTE: aws_eks_cluster의 bootstrap_cluster_creator_admin_permissions = true 설정으로 인해
 # 클러스터 생성 주체(GitHub Actions Role)에는 이미 Cluster Admin 권한의 Access Entry가 자동 부여됩니다.
-# 중복 선언 시 409 Conflict(ResourceInUseException)가 발생하므로 아래 리소스는 비활성화합니다.
-# resource "aws_eks_access_entry" "github_actions" {
-#   cluster_name  = aws_eks_cluster.main.name
-#   principal_arn = var.github_actions_role_arn
-#   type          = "STANDARD"
-# }
-# 
-# resource "aws_eks_access_policy_association" "github_actions_admin" {
-#   cluster_name  = aws_eks_cluster.main.name
-#   principal_arn = aws_eks_access_entry.github_actions.principal_arn
-#   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-# 
-#   access_scope {
-#     type = "cluster"
-#   }
-# }
+# 중복 선언 시 409 Conflict(ResourceInUseException)가 발생하므로 GitHub Actions Role은 선언하지 않습니다.
+
+# 3. 추가 개발자/관리자 IAM 사용자 EKS Access Entry 자동 등록
+resource "aws_eks_access_entry" "developer_admins" {
+  for_each      = toset(var.admin_principal_arns)
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.value
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "developer_admins" {
+  for_each      = toset(var.admin_principal_arns)
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.value
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+}

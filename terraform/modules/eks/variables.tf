@@ -70,3 +70,9 @@ variable "github_actions_role_arn" {
   description = "IAM role ARN used by GitHub Actions to clean up Kubernetes resources before destroy"
   type        = string
 }
+
+variable "admin_principal_arns" {
+  description = "List of additional IAM ARNs (e.g. developer IAM users) to grant EKS Cluster Admin access"
+  type        = list(string)
+  default     = []
+}

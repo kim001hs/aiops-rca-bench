@@ -82,3 +82,9 @@ variable "node_max_size" {
   default     = 3
 }
 
+variable "admin_principal_arns" {
+  description = "List of additional IAM ARNs (e.g. developer IAM users) to grant EKS Cluster Admin access"
+  type        = list(string)
+  default     = []
+}
+

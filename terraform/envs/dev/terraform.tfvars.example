@@ -16,3 +16,8 @@ node_desired_size   = 2
 node_min_size       = 1
 node_max_size       = 3
 
+# EKS 클러스터 관리자 권한을 부여할 IAM 사용자/역할 목록 (로컬 kubectl 직접 접근용)
+admin_principal_arns = [
+  "arn:aws:iam::818719120165:user/kim001hs"
+]
+

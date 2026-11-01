@@ -51,6 +51,7 @@ module "eks" {
   node_min_size           = var.node_min_size
   node_max_size           = var.node_max_size
   github_actions_role_arn = local.github_actions_role_arn
+  admin_principal_arns    = var.admin_principal_arns
 
   # fck-nat가 먼저 구성되어 Private Subnet에서 인터넷 아웃바운드가 열려야 EKS 워커 노드가 조인 가능
   depends_on = [
