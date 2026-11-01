@@ -38,3 +38,27 @@ resource "aws_ecr_lifecycle_policy" "holmesgpt" {
     ]
   })
 }
+
+resource "aws_ecr_repository" "alert_receiver" {
+  name                 = "alert-receiver"
+  image_tag_mutability = "MUTABLE"
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+output "alert_receiver_repository_url" {
+  value = aws_ecr_repository.alert_receiver.repository_url
+}
+
+resource "aws_ecr_repository" "cartservice_benchmark" {
+  name                 = "cartservice-benchmark"
+  image_tag_mutability = "MUTABLE"
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+output "cartservice_benchmark_repository_url" {
+  value = aws_ecr_repository.cartservice_benchmark.repository_url
+}
