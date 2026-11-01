@@ -89,11 +89,13 @@ spec:
           initialDelaySeconds: 15
           grpc:
             port: 7070
+            service: readiness
         livenessProbe:
           initialDelaySeconds: 15
           periodSeconds: 10
           grpc:
             port: 7070
+            service: liveness
 ---
 apiVersion: v1
 kind: Service

@@ -22,6 +22,7 @@ spec:
         app: alert-receiver
     spec:
       serviceAccountName: alert-receiver
+      terminationGracePeriodSeconds: 60
       containers:
         - name: receiver
           image: ALERT_RECEIVER_IMAGE
