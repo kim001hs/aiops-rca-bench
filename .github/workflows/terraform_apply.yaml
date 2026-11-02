@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # 1. 필수 GitHub Secret 확인
       - name: Validate required secrets
@@ -91,31 +93,91 @@ jobs:
           echo "CART_REPO=$CART_REPO" >> "$GITHUB_ENV"
           echo "PAYMENT_REPO=$PAYMENT_REPO" >> "$GITHUB_ENV"
           echo "PROBE_REPO=$PROBE_REPO" >> "$GITHUB_ENV"
+          echo "TF_VAR_alert_receiver_image=$REPO:${GITHUB_SHA}" >> "$GITHUB_ENV"
 
-      - name: Build and push alert receiver
+      - name: Prepare or build container images (ECR Cache Aware)
         shell: bash
         run: |
           set -euo pipefail
+
           aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin "${RECEIVER_REPO%%/*}"
-          docker build -t "$RECEIVER_REPO:${GITHUB_SHA}" "$GITHUB_WORKSPACE/alert-receiver"
-          docker push "$RECEIVER_REPO:${GITHUB_SHA}"
-          echo "TF_VAR_alert_receiver_image=$RECEIVER_REPO:${GITHUB_SHA}" >> "$GITHUB_ENV"
 
-      - name: Build and push cartservice with Redis health check
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker build -t "$CART_REPO:${GITHUB_SHA}" "$GITHUB_WORKSPACE/src/cartservice/src"
-          docker push "$CART_REPO:${GITHUB_SHA}"
+          ensure_ecr_image() {
+            local REPO_URI="$1"
+            local REPO_NAME="${REPO_URI##*/}"
+            local CONTENT_HASH="$2"
+            local GIT_SRC_PATH="$3"
+            local BUILD_TYPE="$4"
+            local BUILD_PATH="$5"
+            local BUILD_CONTEXT="${6:-$BUILD_PATH}"
 
-      - name: Build and push benchmark paymentservice and order probe
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker build -t "$PAYMENT_REPO:${GITHUB_SHA}" "$GITHUB_WORKSPACE/src/paymentservice"
-          docker push "$PAYMENT_REPO:${GITHUB_SHA}"
-          docker build -f "$GITHUB_WORKSPACE/benchmark/order-probe.Dockerfile" -t "$PROBE_REPO:${GITHUB_SHA}" "$GITHUB_WORKSPACE/benchmark"
-          docker push "$PROBE_REPO:${GITHUB_SHA}"
+            local TREE_TAG="tree-${CONTENT_HASH:0:20}"
+
+            echo "=================================================="
+            echo "Checking ECR image for: $REPO_NAME"
+            echo "Target tag      : $GITHUB_SHA"
+            echo "Content tag     : $TREE_TAG"
+
+            # 1. 대상 커밋 SHA 태그가 이미 ECR에 존재하는지 확인 (동일 커밋 재실행 등)
+            if aws ecr describe-images --repository-name "$REPO_NAME" --image-ids imageTag="$GITHUB_SHA" >/dev/null 2>&1; then
+              echo "✓ Image already exists in ECR: $REPO_NAME:$GITHUB_SHA (skipping build)"
+              return 0
+            fi
+
+            # 2. 소스 코드 내용(Tree Hash)이 동일한 기존 이미지가 ECR에 있는지 확인
+            local MANIFEST
+            MANIFEST=$(aws ecr batch-get-image --repository-name "$REPO_NAME" --image-ids imageTag="$TREE_TAG" --query 'images[0].imageManifest' --output text 2>/dev/null || true)
+
+            # 2-1. Tree Tag가 없으면 소스의 마지막 커밋 SHA 태그가 ECR에 있는지 확인 (기존 빌드 이미지 재활용)
+            if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
+              local LAST_COMMIT
+              LAST_COMMIT=$(git log -1 --format="%H" -- $GIT_SRC_PATH 2>/dev/null || true)
+              if [ -n "$LAST_COMMIT" ] && [ "$LAST_COMMIT" != "$GITHUB_SHA" ]; then
+                MANIFEST=$(aws ecr batch-get-image --repository-name "$REPO_NAME" --image-ids imageTag="$LAST_COMMIT" --query 'images[0].imageManifest' --output text 2>/dev/null || true)
+                if [ -n "$MANIFEST" ] && [ "$MANIFEST" != "None" ]; then
+                  echo "✓ Found existing image from last modified commit $LAST_COMMIT in ECR."
+                fi
+              fi
+            fi
+
+            # 2-2. 기존 매니페스트가 있으면 ECR에서 0.5초 만에 신규 태그 매핑 후 종료 (빌드/다운로드 완전 생략)
+            if [ -n "$MANIFEST" ] && [ "$MANIFEST" != "None" ]; then
+              echo "✓ Source code unchanged. Fast-tagging in ECR: $REPO_NAME:$GITHUB_SHA & $TREE_TAG..."
+              aws ecr put-image --repository-name "$REPO_NAME" --image-tag "$GITHUB_SHA" --image-manifest "$MANIFEST" >/dev/null
+              aws ecr put-image --repository-name "$REPO_NAME" --image-tag "$TREE_TAG" --image-manifest "$MANIFEST" >/dev/null 2>&1 || true
+              echo "✓ Successfully reused cached image in ECR."
+              return 0
+            fi
+
+            # 3. 소스가 변경되었거나 ECR 캐시가 없는 경우: 신규 빌드 및 푸시
+            echo "⚡ Source changed or cache missing. Building new image..."
+            if [ "$BUILD_TYPE" = "dockerfile" ]; then
+              docker build -f "$BUILD_PATH" -t "$REPO_URI:$GITHUB_SHA" -t "$REPO_URI:$TREE_TAG" "$BUILD_CONTEXT"
+            else
+              docker build -t "$REPO_URI:$GITHUB_SHA" -t "$REPO_URI:$TREE_TAG" "$BUILD_PATH"
+            fi
+
+            echo "Pushing images ($GITHUB_SHA, $TREE_TAG) to ECR..."
+            docker push "$REPO_URI:$GITHUB_SHA"
+            docker push "$REPO_URI:$TREE_TAG"
+            echo "✓ Successfully built and pushed $REPO_NAME"
+          }
+
+          # 1. alert-receiver
+          ALERT_HASH="$(git rev-parse HEAD:alert-receiver)"
+          ensure_ecr_image "$RECEIVER_REPO" "$ALERT_HASH" "alert-receiver" "dir" "$GITHUB_WORKSPACE/alert-receiver"
+
+          # 2. cartservice
+          CART_HASH="$(git rev-parse HEAD:src/cartservice/src)"
+          ensure_ecr_image "$CART_REPO" "$CART_HASH" "src/cartservice/src" "dir" "$GITHUB_WORKSPACE/src/cartservice/src"
+
+          # 3. paymentservice
+          PAYMENT_HASH="$(git rev-parse HEAD:src/paymentservice)"
+          ensure_ecr_image "$PAYMENT_REPO" "$PAYMENT_HASH" "src/paymentservice" "dir" "$GITHUB_WORKSPACE/src/paymentservice"
+
+          # 4. order-probe
+          PROBE_HASH="$(git rev-parse HEAD:benchmark/order-probe.Dockerfile HEAD:benchmark/order_probe.py | git hash-object --stdin)"
+          ensure_ecr_image "$PROBE_REPO" "$PROBE_HASH" "benchmark/order-probe.Dockerfile benchmark/order_probe.py" "dockerfile" "$GITHUB_WORKSPACE/benchmark/order-probe.Dockerfile" "$GITHUB_WORKSPACE/benchmark"
 
       # 8. EKS 클러스터 및 인프라 프로비저닝 (약 10~15분 소요)
       - name: Terraform Apply
