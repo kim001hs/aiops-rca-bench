@@ -25,7 +25,7 @@ Alertmanager는 `monitoring/alert-receiver.yaml`의 수신 서비스로 firing �
 1. 기존 `terraform/bootstrap` 상태를 적용해 영구 버킷, `alert-receiver` 및 Redis 상태 확인 기능이 포함된 `cartservice` ECR 저장소와 SSM Parameter Store 항목을 만듭니다. 새 상태로 다시 적용하면 다른 버킷이 생길 수 있습니다.
 2. `terraform_apply.yaml`을 실행합니다. 워크플로우는 SSM에서 버킷과 저장소 주소를 읽고, 두 이미지를 빌드해 ECR에 올립니다. Helm은 새 `cartservice` 이미지를 사용하고 dev Terraform은 수신 서비스의 IRSA 역할을 만든 뒤 수신 서비스를 배포합니다. `terraform_destroy.yaml`은 dev 클러스터와 역할만 제거하며 bootstrap 버킷은 유지합니다.
 
-로컬에서 직접 적용할 때도 `TF_VAR_alert_results_bucket`, `TF_VAR_alert_receiver_image`를 지정해야 합니다. 수신 서비스 역할은 `alerts/*`의 `s3:PutObject`와 결과 저장 실패 시 `.claim`만 해제하는 `s3:DeleteObject`를 허용합니다. 로컬 러너는 별도 AWS 읽기 자격증명(`s3:GetObject`)이 필요합니다.
+로컬에서 직접 적용할 때도 `TF_VAR_alert_results_bucket`, `TF_VAR_alert_receiver_image`를 지정해야 합니다. 수신 서비스 역할은 `alerts/*`의 `s3:PutObject`·`s3:GetObject`, 버킷의 `s3:ListBucket`, 결과 저장 실패 시 `.claim`만 해제하는 `s3:DeleteObject`를 허용합니다. `HeadObject`는 `s3:GetObject`가 필요하고, 없는 객체를 404로 구분하려면 `s3:ListBucket`도 필요합니다. 로컬 러너는 별도 AWS 읽기 자격증명(`s3:GetObject`)이 필요합니다.
 
 ## 수집과 채점
 
