@@ -36,6 +36,16 @@ resource "aws_iam_role_policy" "alert_receiver" {
       },
       {
         Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::${var.alert_results_bucket}/alerts/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = "arn:aws:s3:::${var.alert_results_bucket}"
+      },
+      {
+        Effect   = "Allow"
         Action   = ["s3:DeleteObject"]
         Resource = "arn:aws:s3:::${var.alert_results_bucket}/alerts/*/result.json.claim"
       }
