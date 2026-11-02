@@ -54,7 +54,6 @@ module "eks" {
   admin_principal_arns    = var.admin_principal_arns
 
   # fck-nat가 먼저 구성되어 Private Subnet에서 인터넷 아웃바운드가 열려야 EKS 워커 노드가 조인 가능
-  depends_on = [
-    module.fck_nat
-  ]
+  # 주의: 모듈 전체에 depends_on을 걸면 모듈 내부 data 소스가 apply 단계로 지연되어
+  # for_each(Access Entry 등)가 dynamic 에러를 유발하므로 모듈 레벨 depends_on은 사용하지 않습니다.
 }
