@@ -8,10 +8,12 @@ import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import collect
-import evaluate
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from benchmark.lib import collect
+from benchmark import evaluate
 
 spec = importlib.util.spec_from_file_location("alert_receiver", Path(__file__).resolve().parents[2] / "alert-receiver" / "app.py")
 receiver = importlib.util.module_from_spec(spec)

@@ -16,9 +16,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+# pip install -e . 미설치 상태에서도 실행 가능하도록 루트 경로 보장
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-from usage_display import usage_lines
+from benchmark.lib.usage_display import usage_lines
 
 # Windows 환경 한글 및 이모지 입출력 UTF-8 인코딩 강제
 os.environ["PYTHONIOENCODING"] = "utf-8"

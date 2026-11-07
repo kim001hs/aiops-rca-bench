@@ -10,13 +10,15 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# pip install -e . 미설치 상태에서도 실행 가능하도록 루트 경로 보장
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-from runner import (cleanup_fault, ensure_alertmanager_portforward, inject_fault,
-                    precheck_cluster)
-from usage_display import usage_lines
-import order_case
+from benchmark.runner import (cleanup_fault, ensure_alertmanager_portforward, inject_fault,
+                              precheck_cluster)
+from benchmark.lib.usage_display import usage_lines
+from benchmark.lib import order_case
 
 
 def alert_identity(alert):

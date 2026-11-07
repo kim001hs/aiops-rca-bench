@@ -4,9 +4,12 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# pip install -e . 미설치 상태에서도 실행 가능하도록 루트 경로 보장
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-import order_case
+from benchmark.lib import order_case
 
 
 def main():
