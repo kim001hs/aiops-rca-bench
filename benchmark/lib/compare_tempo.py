@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from statistics import mean
 
-ROOT = Path(__file__).resolve().parent / "results"
+ROOT = Path(__file__).resolve().parents[1] / "results"
 CASE = "service_05_order_latency"
 
 

@@ -1,12 +1,17 @@
 import json
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "probes"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import order_case
 import order_probe
 import collect
 import tempfile
-from pathlib import Path
 import shutil
 import uuid
 

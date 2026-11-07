@@ -16,6 +16,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+
 from usage_display import usage_lines
 
 # Windows 환경 한글 및 이모지 입출력 UTF-8 인코딩 강제

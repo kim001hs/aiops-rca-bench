@@ -7,10 +7,10 @@
 실험 전에 `kubectl get pods -n onlineboutique`, `kubectl get pods -n monitoring`과 `kubectl get servicemonitor order-probe -n monitoring`을 확인하세요. Prometheus에서 `order_probe_duration_seconds_count{outcome="success"}`가 증가하고 정상 주문이 0.9초 미만인지 확인해야 합니다. `kubectl port-forward svc/order-probe 8080:8080 -n monitoring` 후 `/probe`는 실제 주문의 성공 여부와 응답 시간을 JSON으로 반환합니다. `/metrics`는 성공/실패별 누적 히스토그램을 반환합니다. 정상 상태에서 `OrderResponseSlow`가 이미 firing이면 실험을 시작하지 않습니다.
 
 ```sh
-python benchmark/tempo_compare.py --pairs 3 --bucket <bucket>
+python benchmark/lib/tempo_compare.py --pairs 3 --bucket <bucket>
 python benchmark/evaluate.py --case service_05_order_latency --version baseline --run all
 python benchmark/evaluate.py --case service_05_order_latency --version tempo --run all
-python benchmark/compare_tempo.py
+python benchmark/lib/compare_tempo.py
 ```
 
 각 회차는 결제 Deployment의 원래 `BENCHMARK_CHARGE_DELAY_MS` 값을 보존한 후 1000으로 설정하고 롤아웃 완료를 기다립니다. 주문 성공과 1초 이상의 응답을 확인한 뒤 알람을 수집합니다. 수집 후 원래 값을 복원하고 해당 알람이 해소될 때까지 기다립니다. 주문이 실패하거나 지연 기준을 충족하지 못하면 `invalid_experiment`로 남기고 채점에서 제외합니다. 기준군과 Tempo군은 번갈아 실행되며 실패 회차가 있으면 시퀀스를 중단합니다.

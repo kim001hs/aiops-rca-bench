@@ -10,6 +10,9 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from runner import (cleanup_fault, ensure_alertmanager_portforward, inject_fault,
                     precheck_cluster)
 from usage_display import usage_lines
@@ -291,7 +294,7 @@ def main():
         parser.error("invalid case or version")
     if args.run is not None and args.run < 1:
         parser.error("--run must be a positive integer")
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[1]
     case_dir = root / "cases" / args.case
     metadata = json.loads((case_dir / "metadata.json").read_text(encoding="utf-8"))
     if metadata.get("case_id") != args.case:

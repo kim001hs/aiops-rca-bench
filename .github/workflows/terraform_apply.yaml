@@ -176,8 +176,8 @@ jobs:
           ensure_ecr_image "$PAYMENT_REPO" "$PAYMENT_HASH" "src/paymentservice" "dir" "$GITHUB_WORKSPACE/src/paymentservice"
 
           # 4. order-probe
-          PROBE_HASH="$(git rev-parse HEAD:benchmark/order-probe.Dockerfile HEAD:benchmark/order_probe.py | git hash-object --stdin)"
-          ensure_ecr_image "$PROBE_REPO" "$PROBE_HASH" "benchmark/order-probe.Dockerfile benchmark/order_probe.py" "dockerfile" "$GITHUB_WORKSPACE/benchmark/order-probe.Dockerfile" "$GITHUB_WORKSPACE/benchmark"
+          PROBE_HASH="$(git rev-parse HEAD:benchmark/probes/order-probe.Dockerfile HEAD:benchmark/probes/order_probe.py | git hash-object --stdin)"
+          ensure_ecr_image "$PROBE_REPO" "$PROBE_HASH" "benchmark/probes/order-probe.Dockerfile benchmark/probes/order_probe.py" "dockerfile" "$GITHUB_WORKSPACE/benchmark/probes/order-probe.Dockerfile" "$GITHUB_WORKSPACE/benchmark/probes"
 
       # 8. EKS 클러스터 및 인프라 프로비저닝 (약 10~15분 소요)
       - name: Terraform Apply
