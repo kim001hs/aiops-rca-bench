@@ -1,12 +1,17 @@
 import json
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-import order_case
-import order_probe
-import collect
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from benchmark.lib import order_case
+from benchmark.probes import order_probe
+from benchmark.lib import collect
 import tempfile
-from pathlib import Path
 import shutil
 import uuid
 

@@ -20,6 +20,11 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+# pip install -e . 미설치 상태에서도 실행 가능하도록 루트 경로 보장
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 # Windows 환경 한글 및 이모지 입출력 UTF-8 인코딩 강제
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
@@ -1350,6 +1355,11 @@ def main():
     print("\n🎉 모든 파이프라인(주입 ➡️ 감지(MTTD) ➡️ 무인 자율진단(MTTI) ➡️ 채점 ➡️ 복구) 1사이클 정상 관통 완료!")
 
 
+def main():
+    """CLI 진입점: benchmark.lib.collect.main으로 위임"""
+    from benchmark.lib.collect import main as collect_main
+    return collect_main()
+
+
 if __name__ == "__main__":
-    from collect import main as collect_main
-    sys.exit(collect_main())
+    sys.exit(main())

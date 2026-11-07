@@ -8,11 +8,14 @@ import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).parent))
-import collect
-import evaluate
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-spec = importlib.util.spec_from_file_location("alert_receiver", Path(__file__).resolve().parents[1] / "alert-receiver" / "app.py")
+from benchmark.lib import collect
+from benchmark import evaluate
+
+spec = importlib.util.spec_from_file_location("alert_receiver", Path(__file__).resolve().parents[2] / "alert-receiver" / "app.py")
 receiver = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(receiver)
 
@@ -235,7 +238,7 @@ class CollectionTests(unittest.TestCase):
         case.mkdir(parents=True)
         (case / "metadata.json").write_text(json.dumps({"case_id": "case", "namespace": "onlineboutique"}))
         try:
-            with patch.object(collect, "__file__", str(base / "collect.py")), \
+            with patch.object(collect, "__file__", str(base / "lib" / "collect.py")), \
                  patch.object(collect, "collect", return_value={"status": "collected"}) as run:
                 with patch.object(sys, "argv", ["runner.py", "--case", "case", "--version", "v1", "--bucket", "bucket"]):
                     self.assertEqual(collect.main(), 0)

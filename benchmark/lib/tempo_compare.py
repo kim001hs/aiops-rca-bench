@@ -5,7 +5,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 CASE = "service_05_order_latency"
 
 
@@ -37,7 +40,7 @@ def main():
     for pair in range(args.pairs):
         for arm in arms:
             set_arm(arm == "tempo")
-            run(sys.executable, str(ROOT / "benchmark" / "collect.py"),
+            run(sys.executable, "-m", "benchmark.runner",
                 "--case", CASE, "--version", arm, "--bucket", args.bucket)
             print(f"pair {pair + 1}: {arm} collected", flush=True)
     print("Collection complete. Run evaluate.py for baseline and tempo with the same judge model.")

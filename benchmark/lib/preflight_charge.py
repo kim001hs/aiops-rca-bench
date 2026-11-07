@@ -1,8 +1,15 @@
 """One reversible live delay check before collecting an alert diagnosis."""
 import json
+import sys
 import time
+from pathlib import Path
 
-import order_case
+# pip install -e . 미설치 상태에서도 실행 가능하도록 루트 경로 보장
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from benchmark.lib import order_case
 
 
 def main():

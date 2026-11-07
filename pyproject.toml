@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiops-rca-bench"
+version = "0.1.0"
+description = "AIOps Root Cause Analysis Benchmark Suite"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "litellm>=1.0.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "boto3>=1.28.0",
+]
+
+[project.scripts]
+benchmark-runner = "benchmark.runner:main"
+benchmark-eval = "benchmark.evaluate:main"
+
+[tool.setuptools.packages.find]
+include = ["benchmark*"]
+

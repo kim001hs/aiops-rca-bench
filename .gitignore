@@ -36,3 +36,4 @@ benchmark/results/*
 !benchmark/results/.gitkeep
 .agent/
 .agents/
+*.egg-info/
