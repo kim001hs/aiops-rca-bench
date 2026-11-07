@@ -176,7 +176,7 @@ def detect_quota_exhaustion(result, fallback_on_503=True):
         return False, ""
 
     # 1. HTTP 402 결제 필요 (Payment Required)
-    if "402" in combined_text or "payment required" in combined_text:
+    if re.search(r"\b402\b", combined_text) or "payment required" in combined_text:
         return True, "quota_exhausted_402"
 
     # 2. 명백한 할당량 초과 (HTTP 429, RESOURCE_EXHAUSTED 등)
@@ -190,11 +190,11 @@ def detect_quota_exhaustion(result, fallback_on_503=True):
         "insufficient_quota",
         "too many requests",
     ]
-    if "429" in combined_text or any(kw in combined_text for kw in quota_keywords):
+    if re.search(r"\b429\b", combined_text) or any(kw in combined_text for kw in quota_keywords):
         return True, "quota_exhausted_429"
 
     # 3. HTTP 503 (Service Unavailable / Model Overloaded)
-    if "503" in combined_text or "service unavailable" in combined_text:
+    if re.search(r"\b503\b", combined_text) or "service unavailable" in combined_text:
         if fallback_on_503:
             if any(w in combined_text for w in ("overload", "capacity", "quota", "resource")):
                 return True, "503_model_overloaded"

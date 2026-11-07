@@ -62,6 +62,25 @@ class TestDetectQuotaExhaustion(unittest.TestCase):
         self.assertFalse(is_quota)
         self.assertEqual(reason, "")
 
+    def test_http_400_bad_request_does_not_trigger(self):
+        result = {"error": "HTTP Error 400: Bad Request: Invalid parameter payload"}
+        is_quota, reason = detect_quota_exhaustion(result)
+        self.assertFalse(is_quota)
+        self.assertEqual(reason, "")
+
+    def test_http_401_403_404_do_not_trigger(self):
+        for code in ["401 Unauthorized", "403 Forbidden", "404 Not Found"]:
+            result = {"error": f"HTTP Error {code}"}
+            is_quota, reason = detect_quota_exhaustion(result)
+            self.assertFalse(is_quota, f"Should not trigger for {code}")
+            self.assertEqual(reason, "")
+
+    def test_number_containing_429_as_substring_does_not_trigger(self):
+        result = {"error": "Connection to backend service on port 8429 failed: Connection reset"}
+        is_quota, reason = detect_quota_exhaustion(result)
+        self.assertFalse(is_quota)
+        self.assertEqual(reason, "")
+
 
 if __name__ == "__main__":
     unittest.main()
