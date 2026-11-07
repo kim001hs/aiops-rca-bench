@@ -176,6 +176,18 @@ def extract_report_text(run_dir: Path) -> str:
     return ""
 
 
+def extract_diagnosis_usage(run_dir: Path) -> str:
+    """Copy the Holmes token and cost lines from the collected report."""
+    report_file = run_dir / "report.md"
+    if not report_file.exists():
+        return "기록 없음"
+    report = report_file.read_text(encoding="utf-8")
+    _, marker, usage = report.partition("## 진단 리소스 사용량\n")
+    if not marker:
+        return "기록 없음"
+    return usage.split("\n## ", 1)[0].strip() or "기록 없음"
+
+
 def evaluate_version(
     version: str,
     cases_dir: Path,
@@ -420,6 +432,7 @@ def evaluate_version(
             "mttd": mttd,
             "mtti": mtti,
             "feedback": judge_res["judge_feedback"],
+            "diagnosis_usage": extract_diagnosis_usage(run_dir),
         })
 
     # 버전별 종합 리포트 생성 (results/summary_<version>.md)
@@ -439,6 +452,7 @@ def evaluate_version(
         for r in summary_rows:
             f.write(f"### 📌 `{r['case_id']}` (Run {r['run']} - {r['title']})\n")
             f.write(f"- **판정**: {r['verdict']} ({r['score']:.1f}점 / 100점)\n")
+            f.write(f"\n#### 진단 리소스 사용량\n\n{r['diagnosis_usage']}\n\n")
             f.write(f"- **심사위원 총평**:\n  > {r['feedback']}\n\n")
 
     print("\n" + "=" * 75)
