@@ -11,9 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from runner import (cleanup_fault, ensure_alertmanager_portforward, inject_fault,
-                    precheck_cluster)
+                    load_env, precheck_cluster)
 from usage_display import usage_lines
 import order_case
+
+load_env()
 
 
 def alert_identity(alert):
@@ -157,8 +159,81 @@ def used_tempo_tool(result):
                for call in calls)
 
 
+def detect_quota_exhaustion(result, fallback_on_503=True):
+    """S3 result.json의 에러 문자열 및 attempts에서 429, 402, 503 과부하 패턴 감지"""
+    if not isinstance(result, dict):
+        return False, ""
+
+    error_candidates = []
+    if result.get("error"):
+        error_candidates.append(str(result["error"]))
+    for attempt in result.get("attempts", []):
+        if isinstance(attempt, dict) and attempt.get("error"):
+            error_candidates.append(str(attempt["error"]))
+
+    combined_text = " ".join(error_candidates).lower()
+    if not combined_text:
+        return False, ""
+
+    # 1. HTTP 402 결제 필요 (Payment Required)
+    if "402" in combined_text or "payment required" in combined_text:
+        return True, "quota_exhausted_402"
+
+    # 2. 명백한 할당량 초과 (HTTP 429, RESOURCE_EXHAUSTED 등)
+    quota_keywords = [
+        "resource_exhausted",
+        "quota exceeded",
+        "exceeded quota",
+        "quota_exceeded",
+        "rate limit",
+        "ratelimit",
+        "insufficient_quota",
+        "too many requests",
+    ]
+    if "429" in combined_text or any(kw in combined_text for kw in quota_keywords):
+        return True, "quota_exhausted_429"
+
+    # 2. HTTP 503 (Service Unavailable / Model Overloaded)
+    if "503" in combined_text or "service unavailable" in combined_text:
+        if fallback_on_503:
+            if any(w in combined_text for w in ("overload", "capacity", "quota", "resource")):
+                return True, "503_model_overloaded"
+            return True, "503_service_unavailable"
+
+    return False, ""
+
+
+def switch_holmes_api_key(paid_key, namespace="monitoring", deployment="holmes-holmes", timeout=60):
+    """클러스터 유휴 상태에서 kubectl set env로 Holmes Pod의 GEMINI_API_KEY를 유료 키로 교체"""
+    if not paid_key:
+        print("[Fallback] GEMINI_API_KEY_PAID가 지정되지 않아 유료 키 전환을 건너뜁니다.")
+        return False
+
+    print(f"[Fallback] 유휴 상태 감지: {deployment} Pod의 GEMINI_API_KEY를 유료 키로 교체합니다...")
+    cmd_set = [
+        "kubectl", "set", "env", f"deployment/{deployment}",
+        "-n", namespace, f"GEMINI_API_KEY={paid_key}"
+    ]
+    res_set = subprocess.run(cmd_set, capture_output=True, text=True)
+    if res_set.returncode != 0:
+        print(f"[Fallback] kubectl set env 실패: {res_set.stderr.strip()}")
+        return False
+
+    cmd_wait = [
+        "kubectl", "rollout", "status", f"deployment/{deployment}",
+        "-n", namespace, f"--timeout={timeout}s"
+    ]
+    res_wait = subprocess.run(cmd_wait, capture_output=True, text=True)
+    if res_wait.returncode != 0:
+        print(f"[Fallback] rollout status 대기 실패: {res_wait.stderr.strip()}")
+        return False
+
+    print(f"[Fallback] {deployment} 유료 키 교체 및 롤아웃 정상 완료.")
+    return True
+
+
 def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout, result_timeout,
-            version="v1", draft=False):
+            version="v1", draft=False, fallback_on_503=True, paid_key=None):
     import boto3
     run_dir.mkdir(parents=True, exist_ok=False)
     state = {"status": "started", "case_id": metadata["case_id"], "version": version,
@@ -225,6 +300,12 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
             state["holmes_tempo_used"] = used_tempo_tool(result)
         (run_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         if result.get("status") != "succeeded":
+            is_quota, quota_reason = detect_quota_exhaustion(result, fallback_on_503=fallback_on_503)
+            if is_quota:
+                state["status"] = "FAILED_QUOTA_EXHAUSTED"
+                state["quota_exhausted"] = True
+                state["quota_reason"] = quota_reason
+                raise RuntimeError(f"Gemini API quota exhausted ({quota_reason}): {result.get('error', 'Holmes diagnosis failed')}")
             state["status"] = "diagnosis_failed"
             raise RuntimeError(result.get("error", "Holmes diagnosis failed"))
         (run_dir / "report.md").write_text(
@@ -266,6 +347,16 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
                 else:
                     state["alert_resolved"] = False
                     state["status"] = "alert_not_resolved"
+
+        # 클린업 완료 후 유휴(Idle) 상태에서 API 키 전환 수행
+        target_paid_key = paid_key or os.environ.get("GEMINI_API_KEY_PAID")
+        if state.get("quota_exhausted") and state.get("cleanup_success", True):
+            if target_paid_key:
+                switch_ok = switch_holmes_api_key(target_paid_key)
+                state["api_key_fallback"] = "switched_to_paid" if switch_ok else "switch_failed"
+            else:
+                state["api_key_fallback"] = "paid_key_not_configured"
+
         for pf in port_forwards:
             pf.terminate()
         state["finishedAt"] = datetime.now(timezone.utc).isoformat()
@@ -283,6 +374,14 @@ def main():
     parser.add_argument("--bucket", default=os.environ.get("ALERT_RESULTS_BUCKET"))
     parser.add_argument("--alert-timeout", type=int, default=120)
     parser.add_argument("--result-timeout", type=int, default=360)
+    parser.add_argument("--fallback-on-503", action="store_true", default=True,
+                        help="HTTP 503 지속 실패 시에도 유료 키 Fallback 허용 (기본: True)")
+    parser.add_argument("--no-fallback-on-503", dest="fallback_on_503", action="store_false",
+                        help="HTTP 503 발생 시 유료 키 Fallback 비활성화")
+    parser.add_argument("--paid-key", default=os.environ.get("GEMINI_API_KEY_PAID"),
+                        help="비상용 유료 Gemini API 키 (기본: GEMINI_API_KEY_PAID 환경변수)")
+    parser.add_argument("--retry-on-fallback", action="store_true",
+                        help="할당량 초과로 유료 키 전환 성공 시 해당 케이스를 즉시 1회 자동 재실행")
     args = parser.parse_args()
     if not args.bucket:
         parser.error("--bucket or ALERT_RESULTS_BUCKET is required")
@@ -300,7 +399,19 @@ def main():
     version_dir.mkdir(parents=True, exist_ok=True)
     run = args.run or max((int(p.name) for p in version_dir.iterdir() if p.is_dir() and p.name.isdigit()), default=0) + 1
     state = collect(metadata, case_dir, version_dir / str(run), args.alertmanager_url,
-                    args.bucket, args.alert_timeout, args.result_timeout, args.version, args.draft)
+                    args.bucket, args.alert_timeout, args.result_timeout, args.version, args.draft,
+                    fallback_on_503=args.fallback_on_503, paid_key=args.paid_key)
+
+    if (state.get("status") == "FAILED_QUOTA_EXHAUSTED"
+            and args.retry_on_fallback
+            and state.get("api_key_fallback") == "switched_to_paid"):
+        print("[Fallback] 할당량 초과로 유료 키 교체 완료. --retry-on-fallback에 따라 다음 회차로 즉시 재실행합니다.")
+        next_run = max((int(p.name) for p in version_dir.iterdir() if p.is_dir() and p.name.isdigit()), default=0) + 1
+        state = collect(metadata, case_dir, version_dir / str(next_run), args.alertmanager_url,
+                        args.bucket, args.alert_timeout, args.result_timeout, args.version, args.draft,
+                        fallback_on_503=args.fallback_on_503, paid_key=args.paid_key)
+        run = next_run
+
     print(json.dumps({"run": str(version_dir / str(run)), "status": state["status"]}, ensure_ascii=False))
     return 0 if state["status"] == "collected" else 1
 
