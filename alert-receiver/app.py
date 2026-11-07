@@ -68,8 +68,21 @@ def object_key(alert):
     return f"alerts/{started.astimezone(timezone.utc):%Y-%m-%d}/{fingerprint}/{safe_time}/result.json"
 
 
-def is_transient_error(exc):
+def http_error_detail(exc):
+    if not isinstance(exc, urllib.error.HTTPError):
+        return ""
+    try:
+        body = exc.read()
+        payload = json.loads(body)
+        return str(payload.get("detail", "")) if isinstance(payload, dict) else ""
+    except (OSError, ValueError, TypeError):
+        return ""
+
+
+def is_transient_error(exc, detail=""):
     if isinstance(exc, urllib.error.HTTPError):
+        if "Too many LLM calls - exceeded max_steps" in detail:
+            return False
         return 500 <= exc.code <= 599 or exc.code == 429
     if isinstance(
         exc,
@@ -122,19 +135,21 @@ def diagnose(alert):
             return resp_data, attempts
         except Exception as exc:
             duration = round(time.monotonic() - attempt_start, 2)
-            last_exc = exc
+            detail = http_error_detail(exc)
+            error_message = f"{exc}: {detail}" if detail else str(exc)
+            last_exc = error_message
             attempts.append(
                 {
                     "attempt": attempt_idx,
                     "timestamp": attempt_ts,
                     "durationSeconds": duration,
-                    "error": str(exc),
+                    "error": error_message,
                     "status": "failed",
                 }
             )
             if (
                 attempt_idx < MAX_RETRIES
-                and is_transient_error(exc)
+                and is_transient_error(exc, detail)
                 and not SHUTDOWN_EVENT.is_set()
             ):
                 backoff = BASE_BACKOFF_SECONDS * (2 ** (attempt_idx - 1))

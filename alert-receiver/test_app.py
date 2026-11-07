@@ -151,6 +151,24 @@ class TestDiagnoseWithRetry(unittest.TestCase):
             self.assertEqual(att["status"], "failed")
         self.assertEqual(mock_sleep.call_count, 2)
 
+    @patch("time.sleep")
+    @patch("urllib.request.urlopen")
+    def test_max_steps_exceeded_is_final_failure(self, mock_urlopen, mock_sleep):
+        detail = "Too many LLM calls - exceeded max_steps: 100/100"
+        response = io.BytesIO(json.dumps({"detail": detail}).encode())
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "http://test", 500, "Internal Server Error", {}, response
+        )
+
+        alert = {"fingerprint": "fp1", "startsAt": "2026-11-01T10:00:00Z"}
+        with self.assertRaises(app.DiagnosisError) as ctx:
+            app.diagnose(alert)
+
+        self.assertEqual(len(ctx.exception.attempts), 1)
+        self.assertEqual(ctx.exception.attempts[0]["status"], "failed")
+        self.assertIn(detail, ctx.exception.attempts[0]["error"])
+        mock_sleep.assert_not_called()
+
 
 class TestIsClaimStale(unittest.TestCase):
     def test_active_claim_not_stale(self):
