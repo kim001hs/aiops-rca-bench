@@ -10,16 +10,41 @@ spec:
   groups:
     - name: benchmark.microservices.rules
       rules:
+        # ======================================================================
+        # [Google SRE Tier 1] 증상 기반 알람 (Symptom / SLO)
+        # ======================================================================
+
+        # [Case 05] E2E 주문 지연 (Google SRE Latency 증상 알람)
         - alert: OrderResponseSlow
           expr: (sum(increase(order_probe_duration_seconds_count{outcome="success"}[1m])) >= 3) and (sum(increase(order_probe_duration_seconds_bucket{outcome="success",le="0.9"}[1m])) / sum(increase(order_probe_duration_seconds_count{outcome="success"}[1m])) < 0.2)
           for: 15s
           labels:
             severity: warning
             namespace: onlineboutique
-            service: orders
+            service: frontend
+            flow: checkout
+            endpoint: /cart/checkout
           annotations:
-            summary: "Observed order response latency is high"
-            description: "Fewer than 20% of successful observed orders completed within 0.9 seconds during the last minute."
+            summary: "Observed order response latency is high at frontend entrypoint"
+            description: "Fewer than 20% of observed successful checkout requests completed within 0.9s at frontend. Check distributed traces from frontend to downstream services to identify bottlenecks."
+
+        # E2E 주문 실패율 급증 (Google SRE Errors 증상 알람)
+        - alert: OrderFailureRateHigh
+          expr: (sum(increase(order_probe_duration_seconds_count{outcome="failure"}[1m])) / sum(increase(order_probe_duration_seconds_count[1m])) > 0.10) and (sum(increase(order_probe_duration_seconds_count[1m])) >= 3)
+          for: 15s
+          labels:
+            severity: critical
+            namespace: onlineboutique
+            service: frontend
+            flow: checkout
+            endpoint: /cart/checkout
+          annotations:
+            summary: "Order checkout failure rate exceeds 10% at frontend entrypoint."
+            description: "Over 10% of observed order attempts failed in the last minute. Inspect frontend logs and downstream service traces."
+
+        # ======================================================================
+        # [Google SRE Tier 2] 원인 / 포화도 기반 알람 (Cause / Saturation)
+        # ======================================================================
 
         # [Case 01] 레플리카 0 / 서비스 다운 (cartservice scale=0 대응)
         - alert: ServiceDeploymentUnavailable

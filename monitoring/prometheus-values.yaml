@@ -17,14 +17,14 @@ alertmanager:
       group_wait: 10s
       group_interval: 30s
       repeat_interval: 12h
-      receiver: 'alert-receiver'
+      receiver: 'null'
       routes:
-        # onlineboutique 네임스페이스의 알람을 우선적으로 holmes로 전달
+        # onlineboutique 네임스페이스의 알람만 alert-receiver로 전달하여 비관련 인프라 잡음 차단
         - matchers:
             - namespace = "onlineboutique"
           receiver: 'alert-receiver'
-          continue: true
     receivers:
+      - name: 'null'
       - name: 'alert-receiver'
         webhook_configs:
           - url: 'http://alert-receiver.monitoring.svc.cluster.local:8080/webhook'

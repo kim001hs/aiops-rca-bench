@@ -61,7 +61,7 @@ class OrderCaseTests(unittest.TestCase):
 
     def test_invalid_order_is_restored_and_not_collected(self):
         metadata = {"case_id": "service_05_order_latency", "namespace": "onlineboutique",
-                    "expected_alert": {"names": ["OrderResponseSlow"], "service": "orders", "service_labels": ["service"]}}
+                    "expected_alert": {"names": ["OrderResponseSlow"], "service": "frontend", "service_labels": ["service"]}}
         baseline = [{"outcome": "success", "duration_seconds": 0.2}]
         failed = [{"outcome": "failure", "duration_seconds": 1.1}]
         directory = Path(__file__).parent / ("test_data_" + uuid.uuid4().hex)

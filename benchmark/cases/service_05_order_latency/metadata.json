@@ -5,7 +5,7 @@
   "namespace": "onlineboutique",
   "expected_alert": {
     "names": ["OrderResponseSlow"],
-    "service": "orders",
+    "service": "frontend",
     "service_labels": ["service"]
   },
   "ground_truth": {
