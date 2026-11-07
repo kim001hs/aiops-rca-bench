@@ -19,6 +19,8 @@ python benchmark/compare_tempo.py
 
 Alertmanager는 `monitoring/alert-receiver.yaml`의 수신 서비스로 firing 웹훅을 보냅니다. 수신 서비스가 알람마다 Holmes `/api/chat`을 호출하고 한국어 지침을 `additional_system_prompt`로 전달합니다. 원본 알람, Holmes 응답, 시각 및 상태는 `s3://<bucket>/alerts/<UTC date>/<fingerprint>/<UTC startsAt>/result.json`에 보존됩니다. 웹훅 재전송은 같은 키의 `.claim` 객체로 중복 진단을 막습니다. 실패한 진단도 `status: failed`로 저장됩니다. 클러스터와 별도인 bootstrap Terraform 버킷은 공개 접근을 차단하고 자동 삭제를 막습니다.
 
+Holmes의 조사 단계 한도를 별도로 설정하지 않으면 기본값 100이 적용되며 Gemini API 호출 할당량과 별개입니다. `max_steps` 초과로 Holmes가 HTTP 500을 반환하면 수정된 수신 서비스는 이를 재시도하지 않고 해당 알람 결과를 `status: failed`로 저장합니다. 다른 일시적 HTTP 5xx 오류는 기존 재시도 정책을 따릅니다.
+
 
 ## 배포
 
