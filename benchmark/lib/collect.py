@@ -162,6 +162,25 @@ def used_tempo_tool(result):
                for call in calls)
 
 
+def get_order_latency_config(metadata):
+    """Return latency fault configuration for order-latency benchmark cases."""
+    if "order_latency_config" in metadata:
+        cfg = dict(metadata["order_latency_config"])
+        cfg.setdefault("custom", True)
+        return cfg
+    if metadata.get("case_id") == "service_05_order_latency":
+        return {
+            "deployment": "paymentservice",
+            "env_name": "BENCHMARK_CHARGE_DELAY_MS",
+            "injected_value": "1000",
+            "require_image": "paymentservice-benchmark",
+            "target_service": "paymentservice",
+            "expected_span": "PaymentService/Charge",
+            "custom": False,
+        }
+    return None
+
+
 def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout, result_timeout,
             version="v1", draft=False):
     import boto3
@@ -169,7 +188,8 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
     state = {"status": "started", "case_id": metadata["case_id"], "version": version,
              "draft": draft, "run": int(run_dir.name), "startedAt": datetime.now(timezone.utc).isoformat()}
     injected = False
-    order_case_run = metadata["case_id"] == "service_05_order_latency"
+    latency_cfg = get_order_latency_config(metadata)
+    order_case_run = latency_cfg is not None
     original_delay = None
     port_forwards = []
     try:
@@ -180,7 +200,15 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
             raise RuntimeError("precheck failed")
         check_case_prerequisites(metadata)
         if order_case_run:
-            original_delay = order_case.original_delay(metadata["namespace"])
+            if latency_cfg.get("custom"):
+                original_delay = order_case.original_delay(
+                    metadata["namespace"],
+                    deployment=latency_cfg["deployment"],
+                    env_name=latency_cfg["env_name"],
+                    require_image=latency_cfg.get("require_image"),
+                )
+            else:
+                original_delay = order_case.original_delay(metadata["namespace"])
             baseline_orders, baseline_metrics = order_case.order_samples()
             state["baseline_orders"] = baseline_orders
             (run_dir / "baseline_metrics.prom").write_text(baseline_metrics, encoding="utf-8")
@@ -191,7 +219,15 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
         state["baseline_alerts"] = [list(item) for item in sorted(baseline)]
         injected = True  # cleanup even when the injection script partially succeeds
         if order_case_run:
-            order_case.set_delay(metadata["namespace"], "1000")
+            if latency_cfg.get("custom"):
+                order_case.set_delay(
+                    metadata["namespace"],
+                    latency_cfg["injected_value"],
+                    deployment=latency_cfg["deployment"],
+                    env_name=latency_cfg["env_name"],
+                )
+            else:
+                order_case.set_delay(metadata["namespace"], "1000")
             injected_orders, injected_metrics = order_case.order_samples()
             state["injected_orders"] = injected_orders
             (run_dir / "injected_metrics.prom").write_text(injected_metrics, encoding="utf-8")
@@ -221,7 +257,15 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
             start = datetime.fromisoformat(state["startedAt"]).timestamp() - 30
             end = datetime.now(timezone.utc).timestamp() + 30
             try:
-                traces = order_case.tempo_search(start, end)
+                if latency_cfg.get("custom"):
+                    traces = order_case.tempo_search(
+                        start,
+                        end,
+                        target_service=latency_cfg["target_service"],
+                        expected_span=latency_cfg["expected_span"],
+                    )
+                else:
+                    traces = order_case.tempo_search(start, end)
                 (run_dir / "tempo_search.json").write_text(json.dumps(traces, indent=2), encoding="utf-8")
                 state["tempo_trace_count"] = len(traces.get("traces", []))
                 state["linked_order_trace_ids"] = traces.get("linked_order_trace_ids", [])
@@ -248,7 +292,15 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
         if injected:
             if order_case_run:
                 try:
-                    order_case.set_delay(metadata["namespace"], original_delay)
+                    if latency_cfg.get("custom"):
+                        order_case.set_delay(
+                            metadata["namespace"],
+                            original_delay,
+                            deployment=latency_cfg["deployment"],
+                            env_name=latency_cfg["env_name"],
+                        )
+                    else:
+                        order_case.set_delay(metadata["namespace"], original_delay)
                     state["cleanup_success"] = True
                 except Exception as exc:
                     state["cleanup_success"] = False

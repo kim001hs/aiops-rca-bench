@@ -1,0 +1,39 @@
+{
+  "case_id": "service_07_email_confirmation_latency",
+  "title": "emailservice 주문 확인 메일 발송 지연으로 인한 주문 응답 지연 (Order Latency)",
+  "category": "latency",
+  "severity": "warning",
+  "namespace": "onlineboutique",
+  "target_deployment": "emailservice",
+  "order_latency_config": {
+    "deployment": "emailservice",
+    "env_name": "BENCHMARK_EMAIL_DELAY_MS",
+    "injected_value": "1000",
+    "require_image": null,
+    "target_service": "emailservice",
+    "expected_span": "SendOrderConfirmation"
+  },
+  "ground_truth": {
+    "root_cause_component": "emailservice",
+    "fault_type": "downstream_rpc_latency",
+    "injected_condition": "emailservice BENCHMARK_EMAIL_DELAY_MS=1000 causing SendOrderConfirmation to sleep 1000ms while returning HTTP 200",
+    "symptom": "frontend POST /cart/checkout succeeds with HTTP 200, but checkout duration exceeds 1s because checkoutservice synchronously awaits emailservice SendOrderConfirmation before returning PlaceOrder",
+    "expected_remediation": "Inspect or remove BENCHMARK_EMAIL_DELAY_MS on deployment/emailservice or decouple synchronous email sending from PlaceOrder."
+  },
+  "evaluation_criteria": {
+    "target_component": "emailservice",
+    "target_fault_type": "emailservice SendOrderConfirmation latency slowing order checkout",
+    "required_evidence": [
+      "OrderResponseSlow alert or order-probe checkout duration above 0.9s",
+      "checkout succeeds without HTTP/gRPC error status",
+      "emailservice SendOrderConfirmation identified as the slow step in the checkout call chain"
+    ],
+    "scoring_note": "Score diagnostic accuracy and evidence quality, not whether Tempo was used. Independent logs or metrics can earn full evidence credit when they identify emailservice latency. Do not treat an unobserved internal cause (such as external SMTP server timeout) as known: if the report claims or suggests an unobserved internal, network, or external dependency is the likely cause without direct evidence, cap factual_accuracy_score at 10/20 even when hedged. Do not mistake the percentage of orders under 0.9s for order success rate."
+  },
+  "expected_alert": {
+    "names": ["OrderResponseSlow"],
+    "service": "frontend",
+    "service_labels": ["service", "job"]
+  }
+}
+

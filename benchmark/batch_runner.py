@@ -297,7 +297,7 @@ def main():
 
     # result-timeout 기본값 설정
     if args.result_timeout is None:
-        args.result_timeout = 900 if args.case == "service_05_order_latency" else 600
+        args.result_timeout = 900 if "latency" in args.case else 600
 
     print("=" * 75)
     print("🚀 [E2E Benchmark Batch Runner 시작]")
