@@ -111,6 +111,7 @@ currencyService:
 emailService:
   create: true
   name: emailservice
+  benchmarkEmailDelayMs: 0
   resources:
     requests:
       cpu: 100m
