@@ -88,11 +88,13 @@ jobs:
           CART_REPO="$(aws ssm get-parameter --name /msa-demo/cartservice-benchmark-repository --query Parameter.Value --output text)"
           PAYMENT_REPO="$(aws ssm get-parameter --name /msa-demo/paymentservice-benchmark-repository --query Parameter.Value --output text)"
           PROBE_REPO="$(aws ssm get-parameter --name /msa-demo/order-probe-repository --query Parameter.Value --output text)"
+          FRONTEND_REPO="$(aws ssm get-parameter --name /msa-demo/frontend-benchmark-repository --query Parameter.Value --output text)"
           echo "TF_VAR_alert_results_bucket=$BUCKET" >> "$GITHUB_ENV"
           echo "RECEIVER_REPO=$REPO" >> "$GITHUB_ENV"
           echo "CART_REPO=$CART_REPO" >> "$GITHUB_ENV"
           echo "PAYMENT_REPO=$PAYMENT_REPO" >> "$GITHUB_ENV"
           echo "PROBE_REPO=$PROBE_REPO" >> "$GITHUB_ENV"
+          echo "FRONTEND_REPO=$FRONTEND_REPO" >> "$GITHUB_ENV"
           echo "TF_VAR_alert_receiver_image=$REPO:${GITHUB_SHA}" >> "$GITHUB_ENV"
 
       - name: Prepare or build container images (ECR Cache Aware)
@@ -179,6 +181,10 @@ jobs:
           PROBE_HASH="$(git rev-parse HEAD:benchmark/probes/order-probe.Dockerfile HEAD:benchmark/probes/order_probe.py | git hash-object --stdin)"
           ensure_ecr_image "$PROBE_REPO" "$PROBE_HASH" "benchmark/probes/order-probe.Dockerfile benchmark/probes/order_probe.py" "dockerfile" "$GITHUB_WORKSPACE/benchmark/probes/order-probe.Dockerfile" "$GITHUB_WORKSPACE/benchmark/probes"
 
+          # 5. frontend
+          FRONTEND_HASH="$(git rev-parse HEAD:src/frontend)"
+          ensure_ecr_image "$FRONTEND_REPO" "$FRONTEND_HASH" "src/frontend" "dir" "$GITHUB_WORKSPACE/src/frontend"
+
       # 8. EKS 클러스터 및 인프라 프로비저닝 (약 10~15분 소요)
       - name: Terraform Apply
         run: terraform apply -auto-approve -lock-timeout=10m
@@ -214,6 +220,7 @@ jobs:
             --create-namespace \
             --set-string "cartService.image=$CART_REPO:${GITHUB_SHA}" \
             --set-string "paymentService.image=$PAYMENT_REPO:${GITHUB_SHA}" \
+            --set-string "frontend.image=$FRONTEND_REPO:${GITHUB_SHA}" \
             --set benchmarkTracing.enabled=true \
             "${CART_HELM_ARGS[@]}"
           kubectl rollout status deployment/opentelemetrycollector -n onlineboutique --timeout=180s
