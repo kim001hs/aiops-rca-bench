@@ -83,6 +83,22 @@ def wait_for_pod_delay(namespace, value, timeout=60, deployment="paymentservice"
     raise TimeoutError(f"{deployment} old pod still present after delay rollout")
 
 
+def wait_for_order_ready(timeout=30, interval=2.0):
+    """Wait until one order probe succeeds after a deployment rollout."""
+    deadline = time.monotonic() + timeout
+    with forward("order-probe", "monitoring", 8080) as base:
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(base + "/probe", timeout=20) as response:
+                    sample = json.load(response)
+                if sample.get("outcome") == "success":
+                    return sample
+            except (OSError, ValueError):
+                pass
+            time.sleep(interval)
+    raise TimeoutError("order probe did not stabilize after delay rollout")
+
+
 def require_valid(samples, minimum=None, maximum=None):
     if any(s["outcome"] != "success" for s in samples):
         raise ValueError("invalid experiment: at least one order failed")
