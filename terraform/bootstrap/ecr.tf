@@ -74,3 +74,9 @@ resource "aws_ecr_repository" "order_probe" {
   image_tag_mutability = "MUTABLE"
   image_scanning_configuration { scan_on_push = true }
 }
+
+resource "aws_ecr_repository" "frontend_benchmark" {
+  name                 = "frontend-benchmark"
+  image_tag_mutability = "MUTABLE"
+  image_scanning_configuration { scan_on_push = true }
+}

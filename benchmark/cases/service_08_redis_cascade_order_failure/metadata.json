@@ -1,0 +1,31 @@
+{
+  "case_id": "service_08_redis_cascade_order_failure",
+  "title": "redis-cart 중단에 따른 cartservice 연쇄 불능 및 주문 실패 (Multi-hop Cascade & Alert Storm)",
+  "category": "cascade_failure",
+  "severity": "critical",
+  "namespace": "onlineboutique",
+  "target_deployment": "redis-cart",
+  "ground_truth": {
+    "root_cause_component": "redis-cart",
+    "fault_type": "downstream_dependency_down_cascade",
+    "injected_condition": "kubectl scale deployment redis-cart --replicas=0 -n onlineboutique",
+    "symptom": "frontend POST /cart/checkout fails with HTTP 500 (OrderFailureRateHigh on service=frontend) while cartservice fails readiness probe (ServicePodNotHealthy on pod=cartservice-*) because redis-cart deployment is scaled to 0 replicas",
+    "expected_remediation": "kubectl scale deployment redis-cart --replicas=1 -n onlineboutique"
+  },
+  "evaluation_criteria": {
+    "target_component": "redis-cart",
+    "target_fault_type": "redis-cart scaled to 0 replicas causing cascading cartservice unavailability and frontend checkout failures",
+    "required_evidence": [
+      "OrderFailureRateHigh alert on frontend or HTTP 500 errors on /cart or /cart/checkout",
+      "cartservice Redis connection failure or readiness failure due to unreachable redis-cart:6379",
+      "redis-cart deployment scaled to 0 replicas (no running redis-cart pods)"
+    ],
+    "scoring_note": "The alert fires on frontend (OrderFailureRateHigh, service=frontend). A report that stops at cartservice being unhealthy or blames cartservice configuration without identifying that deployment/redis-cart is scaled to 0 replicas should receive at most 15/30 on root_cause_score."
+  },
+  "expected_alert": {
+    "names": ["OrderFailureRateHigh"],
+    "service": "frontend",
+    "service_labels": ["service", "job"]
+  }
+}
+

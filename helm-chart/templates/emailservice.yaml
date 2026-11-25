@@ -70,18 +70,36 @@ spec:
           privileged: false
           readOnlyRootFilesystem: true
         image: {{ .Values.images.repository }}/{{ .Values.emailService.name }}:{{ .Values.images.tag | default .Chart.AppVersion }}
+        command: ["python", "-c"]
+        args:
+          - |
+            import os, runpy, time, demo_pb2_grpc
+            orig_add = demo_pb2_grpc.add_EmailServiceServicer_to_server
+            def wrapped_add(servicer, server):
+                orig_send = servicer.SendOrderConfirmation
+                def delayed_send(request, context):
+                    ms = int(os.environ.get("BENCHMARK_EMAIL_DELAY_MS", "0"))
+                    if ms > 0:
+                        time.sleep(ms / 1000.0)
+                    return orig_send(request, context)
+                servicer.SendOrderConfirmation = delayed_send
+                return orig_add(servicer, server)
+            demo_pb2_grpc.add_EmailServiceServicer_to_server = wrapped_add
+            runpy.run_path("email_server.py", run_name="__main__")
         ports:
         - containerPort: 8080
         env:
         - name: PORT
           value: "8080"
-        {{- if .Values.opentelemetryCollector.create }}
+        - name: BENCHMARK_EMAIL_DELAY_MS
+          value: {{ .Values.emailService.benchmarkEmailDelayMs | quote }}
+        {{- if or .Values.opentelemetryCollector.create .Values.benchmarkTracing.enabled }}
         - name: COLLECTOR_SERVICE_ADDR
           value: "{{ .Values.opentelemetryCollector.name }}:4317"
         - name: OTEL_SERVICE_NAME
           value: "{{ .Values.emailService.name }}"
         {{- end }}
-        {{- if .Values.googleCloudOperations.tracing }}
+        {{- if or .Values.googleCloudOperations.tracing .Values.benchmarkTracing.enabled }}
         - name: ENABLE_TRACING
           value: "1"
         {{- end }}

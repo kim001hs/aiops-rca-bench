@@ -414,7 +414,7 @@ def evaluate_version(
             },
             "Feedback": judge_res["judge_feedback"],
         }
-        if case_id == "service_05_order_latency":
+        if case_id == "service_05_order_latency" or metadata.get("category") == "latency" or "order_latency_config" in metadata:
             scorecard["Tempo_Comparison"] = {
                 "Holmes_Tempo_Used": run_info.get("holmes_tempo_used"),
                 "Linked_Order_Trace_IDs": run_info.get("linked_order_trace_ids", []),

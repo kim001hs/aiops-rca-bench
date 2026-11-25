@@ -27,3 +27,9 @@ resource "aws_ssm_parameter" "order_probe_repository" {
   type  = "String"
   value = aws_ecr_repository.order_probe.repository_url
 }
+
+resource "aws_ssm_parameter" "frontend_benchmark_repository" {
+  name  = "/${var.project_name}/frontend-benchmark-repository"
+  type  = "String"
+  value = aws_ecr_repository.frontend_benchmark.repository_url
+}

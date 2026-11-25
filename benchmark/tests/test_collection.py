@@ -250,6 +250,25 @@ class CollectionTests(unittest.TestCase):
             if base.resolve().parent == Path(__file__).parent.resolve():
                 shutil.rmtree(base)
 
+    def test_case08_selects_frontend_order_failure_alert_during_cascade_storm(self):
+        metadata = json.loads(
+            (_ROOT / "benchmark" / "cases" / "service_08_redis_cascade_order_failure" / "metadata.json").read_text(encoding="utf-8")
+        )
+        cart_unhealthy = {
+            "status": {"state": "active"},
+            "fingerprint": "fp-cart",
+            "startsAt": "2026-11-15T10:00:00Z",
+            "labels": {"namespace": "onlineboutique", "alertname": "ServicePodNotHealthy", "pod": "cartservice-abc"},
+        }
+        frontend_order_fail = {
+            "status": {"state": "active"},
+            "fingerprint": "fp-order",
+            "startsAt": "2026-11-15T10:00:05Z",
+            "labels": {"namespace": "onlineboutique", "alertname": "OrderFailureRateHigh", "service": "frontend"},
+        }
+        selected, state = collect.choose_alert([cart_unhealthy, frontend_order_fail], set(), metadata)
+        self.assertEqual((selected, state), (frontend_order_fail, "selected"))
+
 
 if __name__ == "__main__":
     unittest.main()

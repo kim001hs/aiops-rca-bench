@@ -80,6 +80,66 @@ class OrderCaseTests(unittest.TestCase):
         self.assertEqual(state["status"], "invalid_experiment")
         self.assertEqual([call.args[1] for call in delay.call_args_list], ["1000", "0"])
 
+    def test_custom_order_latency_config_injects_and_restores_target_deployment(self):
+        metadata = json.loads(
+            (_ROOT / "benchmark" / "cases" / "service_06_productcatalog_latency" / "metadata.json").read_text(encoding="utf-8")
+        )
+        deployment = {"spec": {"template": {"spec": {"containers": [{
+            "name": "server", "image": "gcr.io/google-samples/microservices-demo/productcatalogservice:v0.10.2",
+            "env": [{"name": "PORT", "value": "3550"}]
+        }]}}}}
+        with patch.object(order_case, "kubectl", return_value=json.dumps(deployment)) as command, \
+             patch.object(order_case, "wait_for_pod_delay") as wait_pod:
+            cfg = metadata["order_latency_config"]
+            original = order_case.original_delay(
+                metadata["namespace"],
+                deployment=cfg["deployment"],
+                env_name=cfg["env_name"],
+                require_image=cfg["require_image"],
+            )
+            self.assertIsNone(original)
+            order_case.set_delay(metadata["namespace"], cfg["injected_value"],
+                                 deployment=cfg["deployment"], env_name=cfg["env_name"])
+            order_case.set_delay(metadata["namespace"], original,
+                                 deployment=cfg["deployment"], env_name=cfg["env_name"])
+        self.assertEqual(command.call_args_list[1].args, ("set", "env", "deployment/productcatalogservice", "-n", "onlineboutique", "EXTRA_LATENCY=600ms"))
+        self.assertEqual(command.call_args_list[3].args, ("set", "env", "deployment/productcatalogservice", "-n", "onlineboutique", "EXTRA_LATENCY-"))
+        self.assertEqual(wait_pod.call_count, 2)
+
+    def test_email_confirmation_latency_collect_uses_custom_config(self):
+        metadata = json.loads(
+            (_ROOT / "benchmark" / "cases" / "service_07_email_confirmation_latency" / "metadata.json").read_text(encoding="utf-8")
+        )
+        baseline = [{"outcome": "success", "duration_seconds": 0.2}]
+        failed = [{"outcome": "failure", "duration_seconds": 1.1}]
+        directory = Path(__file__).parent / ("test_data_" + uuid.uuid4().hex)
+        directory.mkdir()
+        try:
+            with patch.object(collect, "ensure_alertmanager_portforward", return_value=(None, "http://localhost:9093")), \
+                 patch.object(collect, "precheck_cluster", return_value=True), \
+                 patch.object(collect, "get_active_alerts", return_value=[]), \
+                 patch.object(order_case, "original_delay", return_value="0") as orig, \
+                 patch.object(order_case, "order_samples", side_effect=[(baseline, "metric"), (failed, "metric")]), \
+                 patch.object(order_case, "set_delay") as delay:
+                state = collect.collect(metadata, directory, directory / "1", "http://localhost:9093", "bucket", 1, 1)
+        finally:
+            if directory.resolve().parent == Path(__file__).parent.resolve():
+                shutil.rmtree(directory)
+        self.assertEqual(state["status"], "invalid_experiment")
+        orig.assert_called_once_with(
+            "onlineboutique",
+            deployment="emailservice",
+            env_name="BENCHMARK_EMAIL_DELAY_MS",
+            require_image=None,
+        )
+        self.assertEqual(
+            [(c.args, c.kwargs) for c in delay.call_args_list],
+            [
+                (("onlineboutique", "1000"), {"deployment": "emailservice", "env_name": "BENCHMARK_EMAIL_DELAY_MS"}),
+                (("onlineboutique", "0"), {"deployment": "emailservice", "env_name": "BENCHMARK_EMAIL_DELAY_MS"}),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

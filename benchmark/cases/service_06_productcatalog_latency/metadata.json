@@ -1,0 +1,39 @@
+{
+  "case_id": "service_06_productcatalog_latency",
+  "title": "productcatalogservice 상품 조회 지연으로 인한 주문 응답 지연 (Order Latency)",
+  "category": "latency",
+  "severity": "warning",
+  "namespace": "onlineboutique",
+  "target_deployment": "productcatalogservice",
+  "order_latency_config": {
+    "deployment": "productcatalogservice",
+    "env_name": "EXTRA_LATENCY",
+    "injected_value": "600ms",
+    "require_image": null,
+    "target_service": "productcatalogservice",
+    "expected_span": "ProductCatalogService/"
+  },
+  "ground_truth": {
+    "root_cause_component": "productcatalogservice",
+    "fault_type": "downstream_rpc_latency",
+    "injected_condition": "productcatalogservice EXTRA_LATENCY=600ms causing GetProduct (+600ms in checkoutservice) and ListProducts (+600ms via recommendationservice) to delay checkout responses beyond 0.9s while returning HTTP 200",
+    "symptom": "frontend POST /cart/checkout succeeds with HTTP 200, but checkout duration increases to ~1.25s because checkoutservice calls productcatalogservice GetProduct and frontend calls recommendationservice -> productcatalogservice ListProducts",
+    "expected_remediation": "Inspect or remove EXTRA_LATENCY on deployment/productcatalogservice or investigate productcatalogservice gRPC latency."
+  },
+  "evaluation_criteria": {
+    "target_component": "productcatalogservice",
+    "target_fault_type": "productcatalogservice gRPC latency slowing order checkout",
+    "required_evidence": [
+      "OrderResponseSlow alert or order-probe checkout duration above 0.9s",
+      "checkout succeeds without HTTP/gRPC error status",
+      "productcatalogservice GetProduct / ListProducts identified as the slow dependency in the checkout call chain"
+    ],
+    "scoring_note": "Score diagnostic accuracy and evidence quality, not whether Tempo was used. Independent logs or metrics can earn full evidence credit when they identify productcatalogservice latency. Do not treat an unobserved internal cause (such as database lock or disk I/O) as known: if the report claims or suggests an unobserved internal, network, or external dependency is the likely cause without direct evidence, cap factual_accuracy_score at 10/20 even when hedged. Do not mistake the percentage of orders under 0.9s for order success rate."
+  },
+  "expected_alert": {
+    "names": ["OrderResponseSlow"],
+    "service": "frontend",
+    "service_labels": ["service", "job"]
+  }
+}
+

@@ -28,9 +28,11 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -161,11 +163,32 @@ func main() {
 	r.HandleFunc(baseUrl+"/_healthz", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "ok") })
 	r.HandleFunc(baseUrl+"/product-meta/{ids}", svc.getProductByID).Methods(http.MethodGet)
 	r.HandleFunc(baseUrl+"/bot", svc.chatBotHandler).Methods(http.MethodPost)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if route := mux.CurrentRoute(req); route != nil {
+				if tpl, err := route.GetPathTemplate(); err == nil && tpl != "" {
+					span := trace.SpanFromContext(req.Context())
+					span.SetName(req.Method + " " + tpl)
+					span.SetAttributes(
+						attribute.String("http.route", tpl),
+						attribute.String("http.target", req.URL.Path),
+					)
+				}
+			}
+			next.ServeHTTP(w, req)
+		})
+	})
 
 	var handler http.Handler = r
-	handler = &logHandler{log: log, next: handler}     // add logging
-	handler = ensureSessionID(handler)                 // add session ID
-	handler = otelhttp.NewHandler(handler, "frontend") // add OTel tracing
+	handler = &logHandler{log: log, next: handler} // add logging
+	handler = ensureSessionID(handler)             // add session ID
+	handler = otelhttp.NewHandler(
+		handler,
+		"frontend",
+		otelhttp.WithSpanNameFormatter(func(_ string, req *http.Request) string {
+			return req.Method + " " + req.URL.Path
+		}),
+	) // add OTel tracing
 
 	log.Infof("starting server on %s:%s", addr, srvPort)
 	log.Fatal(http.ListenAndServe(addr+":"+srvPort, handler))

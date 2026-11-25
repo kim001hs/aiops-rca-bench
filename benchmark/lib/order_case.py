@@ -53,32 +53,34 @@ def order_samples(n=3):
     return samples, metrics
 
 
-def original_delay(namespace):
-    deployment = json.loads(kubectl("get", "deployment", "paymentservice", "-n", namespace, "-o", "json"))
-    container = next(c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "server")
-    if "paymentservice-benchmark" not in container["image"]:
-        raise RuntimeError("benchmark paymentservice image is required")
-    return next((e["value"] for e in container.get("env", []) if e["name"] == "BENCHMARK_CHARGE_DELAY_MS"), None)
+def original_delay(namespace, deployment="paymentservice", env_name="BENCHMARK_CHARGE_DELAY_MS",
+                   require_image="paymentservice-benchmark"):
+    dep = json.loads(kubectl("get", "deployment", deployment, "-n", namespace, "-o", "json"))
+    container = next(c for c in dep["spec"]["template"]["spec"]["containers"] if c["name"] == "server")
+    if require_image and require_image not in container["image"]:
+        raise RuntimeError(f"benchmark {deployment} image ({require_image}) is required")
+    return next((e.get("value") for e in container.get("env", []) if e["name"] == env_name), None)
 
 
-def set_delay(namespace, value):
-    assignment = "BENCHMARK_CHARGE_DELAY_MS-" if value is None else f"BENCHMARK_CHARGE_DELAY_MS={value}"
-    kubectl("set", "env", "deployment/paymentservice", "-n", namespace, assignment)
-    kubectl("rollout", "status", "deployment/paymentservice", "-n", namespace, "--timeout=180s")
-    wait_for_pod_delay(namespace, value)
+def set_delay(namespace, value, deployment="paymentservice", env_name="BENCHMARK_CHARGE_DELAY_MS"):
+    assignment = f"{env_name}-" if value is None else f"{env_name}={value}"
+    kubectl("set", "env", f"deployment/{deployment}", "-n", namespace, assignment)
+    kubectl("rollout", "status", f"deployment/{deployment}", "-n", namespace, "--timeout=180s")
+    wait_for_pod_delay(namespace, value, deployment=deployment, env_name=env_name)
 
 
-def wait_for_pod_delay(namespace, value, timeout=60):
+def wait_for_pod_delay(namespace, value, timeout=60, deployment="paymentservice",
+                       env_name="BENCHMARK_CHARGE_DELAY_MS"):
     """Rollout status can finish while an old pod still receives traffic."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        pods = json.loads(kubectl("get", "pods", "-n", namespace, "-l", "app=paymentservice", "-o", "json"))["items"]
+        pods = json.loads(kubectl("get", "pods", "-n", namespace, "-l", f"app={deployment}", "-o", "json"))["items"]
         if pods and all(next((env.get("value") for c in pod["spec"]["containers"]
-                              for env in c.get("env", []) if env["name"] == "BENCHMARK_CHARGE_DELAY_MS"), None) == value
+                              for env in c.get("env", []) if env["name"] == env_name), None) == value
                         for pod in pods):
             return
         time.sleep(2)
-    raise TimeoutError("paymentservice old pod still present after delay rollout")
+    raise TimeoutError(f"{deployment} old pod still present after delay rollout")
 
 
 def require_valid(samples, minimum=None, maximum=None):
@@ -91,10 +93,10 @@ def require_valid(samples, minimum=None, maximum=None):
         raise ValueError(f"invalid experiment: baseline checkout at or above {maximum}s")
 
 
-def tempo_search(start, end):
+def tempo_search(start, end, target_service="paymentservice", expected_span="PaymentService/Charge"):
     """Preserve raw Tempo search results for the run's alert window."""
     with forward_tempo() as base:
-        query = urllib.parse.urlencode({"q": '{ resource.service.name = "paymentservice" }',
+        query = urllib.parse.urlencode({"q": f'{{ resource.service.name = "{target_service}" }}',
                                         "start": int(start), "end": int(end), "limit": 50})
         with urllib.request.urlopen(f"{base}/api/search?{query}", timeout=10) as response:
             found = json.load(response)
@@ -106,16 +108,19 @@ def tempo_search(start, end):
             with urllib.request.urlopen(f"{base}/api/traces/{trace_id}", timeout=10) as response:
                 detail = json.load(response)
             services = set()
-            charge_span = False
+            matched_span = False
             for batch in detail.get("batches", []):
                 services.add((batch.get("process") or {}).get("serviceName"))
                 for scope in batch.get("scopeSpans", []):
-                    charge_span |= any("PaymentService/Charge" in span.get("name", "") for span in scope.get("spans", []))
+                    matched_span |= any(expected_span in span.get("name", "") for span in scope.get("spans", []))
             for batch in detail.get("batches", []) + detail.get("resourceSpans", []):
                 for attribute in (batch.get("resource") or {}).get("attributes", []):
                     if attribute.get("key") == "service.name":
                         services.add((attribute.get("value") or {}).get("stringValue"))
-            if {"frontend", "checkoutservice", "paymentservice"} <= services and charge_span:
+                for scope in batch.get("scopeSpans", []):
+                    matched_span |= any(expected_span in span.get("name", "") for span in scope.get("spans", []))
+            required_services = {"frontend", "checkoutservice", target_service}
+            if required_services <= services and matched_span:
                 linked.append(trace_id)
         found["linked_order_trace_ids"] = linked
         return found

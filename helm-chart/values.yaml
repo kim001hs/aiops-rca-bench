@@ -111,6 +111,7 @@ currencyService:
 emailService:
   create: true
   name: emailservice
+  benchmarkEmailDelayMs: 0
   resources:
     requests:
       cpu: 100m
@@ -122,6 +123,7 @@ emailService:
 frontend:
   create: true
   name: frontend
+  image: ""
   externalService: false
   cymbalBranding: false
   # One of: local, gcp, aws, azure, onprem, alibaba. When not set, defaults to "local" unless running in GKE, otherwise auto-sets to gcp.

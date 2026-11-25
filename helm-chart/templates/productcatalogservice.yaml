@@ -75,13 +75,13 @@ spec:
         env:
         - name: PORT
           value: "3550"
-        {{- if .Values.opentelemetryCollector.create }}
+        {{- if or .Values.opentelemetryCollector.create .Values.benchmarkTracing.enabled }}
         - name: COLLECTOR_SERVICE_ADDR
           value: "{{ .Values.opentelemetryCollector.name }}:4317"
         - name: OTEL_SERVICE_NAME
           value: "{{ .Values.productCatalogService.name }}"
         {{- end }}
-        {{- if .Values.googleCloudOperations.tracing }}
+        {{- if or .Values.googleCloudOperations.tracing .Values.benchmarkTracing.enabled }}
         - name: ENABLE_TRACING
           value: "1"
         {{- end }}
