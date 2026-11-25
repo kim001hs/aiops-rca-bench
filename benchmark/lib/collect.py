@@ -228,6 +228,7 @@ def collect(metadata, case_dir, run_dir, alertmanager_url, bucket, alert_timeout
                 )
             else:
                 order_case.set_delay(metadata["namespace"], "1000")
+            order_case.wait_for_order_ready()
             injected_orders, injected_metrics = order_case.order_samples()
             state["injected_orders"] = injected_orders
             (run_dir / "injected_metrics.prom").write_text(injected_metrics, encoding="utf-8")

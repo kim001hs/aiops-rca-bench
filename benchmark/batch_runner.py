@@ -31,6 +31,21 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
+def reset_tempo_traces(namespace: str = "monitoring") -> None:
+    """케이스 전환 시 이전 실험의 잔여 트레이스가 혼입되지 않도록 Tempo 파드를 재시작합니다."""
+    check = subprocess.run(
+        ["kubectl", "get", "statefulset", "tempo", "-n", namespace],
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode != 0:
+        return
+    print("\n🧹 [실험 격리] 이전 케이스 트레이스 초기화를 위해 Tempo를 재시작합니다...", flush=True)
+    restart_code = stream_command(["kubectl", "rollout", "restart", "statefulset/tempo", "-n", namespace])
+    if restart_code == 0:
+        stream_command(["kubectl", "rollout", "status", "statefulset/tempo", "-n", namespace, "--timeout=120s"])
+
+
 def load_env():
     """benchmark/.env 및 루트 .env 자동 로드"""
     base_dir = Path(__file__).resolve().parent
@@ -293,6 +308,11 @@ def main():
         default=os.environ.get("MODEL", "gemini/gemini-3.1-flash-lite"),
         help="LLM 채점관 모델 (기본값: .env의 MODEL 또는 gemini/gemini-3.1-flash-lite)",
     )
+    parser.add_argument(
+        "--skip-tempo-reset",
+        action="store_true",
+        help="케이스 시작 전 Tempo 파드 재시작(이전 케이스 트레이스 초기화) 생략",
+    )
     args = parser.parse_args()
 
     # result-timeout 기본값 설정
@@ -308,6 +328,9 @@ def main():
     print(f" • 대기 제한:   알람 {args.alert_timeout}초 / 진단결과 {args.result_timeout}초")
     print(f" • 쿨다운 간격: {args.cooldown}초")
     print("=" * 75, flush=True)
+
+    if not args.skip_tempo_reset:
+        reset_tempo_traces()
 
     # 1. 반복 실행 루프
     total_runs = args.count

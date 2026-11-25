@@ -72,12 +72,14 @@ class OrderCaseTests(unittest.TestCase):
              patch.object(collect, "get_active_alerts", return_value=[]), \
              patch.object(order_case, "original_delay", return_value="0"), \
              patch.object(order_case, "order_samples", side_effect=[(baseline, "metric"), (failed, "metric")]), \
+             patch.object(order_case, "wait_for_order_ready") as wait_ready, \
              patch.object(order_case, "set_delay") as delay:
             state = collect.collect(metadata, directory, directory / "1", "http://localhost:9093", "bucket", 1, 1)
         finally:
             if directory.resolve().parent == Path(__file__).parent.resolve():
                 shutil.rmtree(directory)
         self.assertEqual(state["status"], "invalid_experiment")
+        wait_ready.assert_called_once()
         self.assertEqual([call.args[1] for call in delay.call_args_list], ["1000", "0"])
 
     def test_custom_order_latency_config_injects_and_restores_target_deployment(self):
@@ -120,12 +122,14 @@ class OrderCaseTests(unittest.TestCase):
                  patch.object(collect, "get_active_alerts", return_value=[]), \
                  patch.object(order_case, "original_delay", return_value="0") as orig, \
                  patch.object(order_case, "order_samples", side_effect=[(baseline, "metric"), (failed, "metric")]), \
+                 patch.object(order_case, "wait_for_order_ready") as wait_ready, \
                  patch.object(order_case, "set_delay") as delay:
                 state = collect.collect(metadata, directory, directory / "1", "http://localhost:9093", "bucket", 1, 1)
         finally:
             if directory.resolve().parent == Path(__file__).parent.resolve():
                 shutil.rmtree(directory)
         self.assertEqual(state["status"], "invalid_experiment")
+        wait_ready.assert_called_once()
         orig.assert_called_once_with(
             "onlineboutique",
             deployment="emailservice",
@@ -139,6 +143,28 @@ class OrderCaseTests(unittest.TestCase):
                 (("onlineboutique", "0"), {"deployment": "emailservice", "env_name": "BENCHMARK_EMAIL_DELAY_MS"}),
             ],
         )
+
+    def test_wait_for_order_ready_retries_until_probe_succeeds(self):
+        class FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return json.dumps(self._payload).encode("utf-8")
+
+        responses = [
+            FakeResp({"outcome": "failure", "duration_seconds": 0.5}),
+            FakeResp({"outcome": "success", "duration_seconds": 1.25}),
+        ]
+        with patch.object(order_case, "forward") as fwd, \
+             patch.object(order_case.urllib.request, "urlopen", side_effect=responses), \
+             patch.object(order_case.time, "sleep"):
+            fwd.return_value.__enter__.return_value = "http://127.0.0.1:8080"
+            sample = order_case.wait_for_order_ready(timeout=10, interval=0.1)
+        self.assertEqual(sample["outcome"], "success")
 
 
 if __name__ == "__main__":
