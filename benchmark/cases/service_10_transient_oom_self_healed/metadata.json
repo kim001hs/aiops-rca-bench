@@ -1,0 +1,29 @@
+{
+  "case_id": "service_10_transient_oom_self_healed",
+  "title": "recommendationservice 일시 메모리 폭증(OOMKilled) 후 자가 복구 상태 추적 (Self-Healed Transient OOM)",
+  "category": "resource",
+  "severity": "critical",
+  "namespace": "onlineboutique",
+  "target_deployment": "recommendationservice",
+  "ground_truth": {
+    "root_cause_component": "recommendationservice",
+    "fault_type": "Transient Memory Limit Exceeded / OOMKilled (Self-Healed)",
+    "injected_condition": "Transient memory allocation spike inside recommendationservice pod exceeding 450Mi container limit, followed by Kubernetes self-healing restart to 1/1 Running",
+    "symptom": "ServiceContainerOOMKilled fires for recommendationservice while the pod has already self-healed back to 1/1 Running with incremented restartCount and lastState.terminated.reason=OOMKilled.",
+    "expected_remediation": "Inspect previous container logs (kubectl logs --previous) and pod lastState (OOMKilled, Exit Code 137), then review recommendationservice memory limits (450Mi) or memory leak patterns."
+  },
+  "evaluation_criteria": {
+    "target_component": "recommendationservice",
+    "target_fault_type": "Transient Memory Limit Exceeded / OOMKilled despite pod currently being 1/1 Running",
+    "required_evidence": [
+      "oomkilled or exit code 137 or oom",
+      "laststate or restart or --previous or self-healed"
+    ],
+    "scoring_note": "The pod is 1/1 Running at investigation time. A report that concludes everything is healthy based only on current pod status or current logs without checking lastState.terminated (OOMKilled) or --previous logs should fail."
+  },
+  "expected_alert": {
+    "names": ["ServiceContainerOOMKilled"],
+    "service": "recommendationservice",
+    "service_labels": ["pod"]
+  }
+}
