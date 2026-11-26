@@ -484,5 +484,61 @@ class TestHTTPHandler(unittest.TestCase):
         self.assertIn(b"503", response)
 
 
+    def test_webhook_grouped_alerts_enqueued_as_bundle(self):
+        payload = {
+            "alerts": [
+                {
+                    "status": "firing",
+                    "fingerprint": "alert-order-1",
+                    "startsAt": "2026-11-01T12:00:00Z",
+                    "labels": {"alertname": "OrderFailureRateHigh"},
+                },
+                {
+                    "status": "firing",
+                    "fingerprint": "alert-pod-2",
+                    "startsAt": "2026-11-01T12:00:05Z",
+                    "labels": {"alertname": "ServicePodNotHealthy"},
+                },
+            ]
+        }
+        body = json.dumps(payload).encode("utf-8")
+        req = (
+            b"POST /webhook HTTP/1.1\r\n"
+            b"Host: localhost\r\n"
+            b"Content-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
+            + body
+        )
+
+        _, response = self.make_handler(req)
+        self.assertIn(b"200 OK", response)
+        self.assertIn(b'"queued": 2', response)
+        self.assertEqual(app.ALERT_QUEUE.qsize(), 1)
+        queued_group = app.ALERT_QUEUE.get_nowait()
+        self.assertIsInstance(queued_group, list)
+        self.assertEqual([a["fingerprint"] for a in queued_group], ["alert-order-1", "alert-pod-2"])
+
+    @patch("app.diagnose")
+    @patch("app.s3")
+    def test_process_alert_group_calls_diagnose_once_for_multiple_alerts(self, mock_s3, mock_diagnose):
+        not_found = app.ClientError({"Error": {"Code": "404"}}, "HeadObject")
+        mock_s3.head_object.side_effect = not_found
+        mock_diagnose.return_value = ({"answer": "redis-cart replicas=0"}, [{"attempt": 1, "status": "succeeded"}])
+
+        alerts = [
+            {"fingerprint": "fp-order", "startsAt": "2026-11-01T12:00:00Z"},
+            {"fingerprint": "fp-pod", "startsAt": "2026-11-01T12:00:05Z"},
+        ]
+        status = app.process_alert_group(alerts, worker_id=1)
+        self.assertEqual(status, "succeeded")
+        mock_diagnose.assert_called_once()
+        # 2 claim put_object + 2 result.json put_object
+        result_puts = [c for c in mock_s3.put_object.call_args_list if c.kwargs["Key"].endswith("result.json")]
+        self.assertEqual(len(result_puts), 2)
+        for c in result_puts:
+            payload = json.loads(c.kwargs["Body"].decode("utf-8"))
+            self.assertEqual(payload["groupedAlertsCount"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

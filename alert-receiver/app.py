@@ -99,12 +99,18 @@ def is_transient_error(exc, detail=""):
     return False
 
 
-def diagnose(alert):
+def diagnose(alert, co_occurring_alerts=None):
     question = (
         "Investigate this firing Alertmanager alert in Kubernetes. Identify the root cause, "
         "supporting evidence, and remediation. Alert data: "
         + json.dumps(alert, ensure_ascii=False)
     )
+    if co_occurring_alerts:
+        question += (
+            " Co-occurring firing alerts in the same Alertmanager group "
+            "(consider causal/cascade relationships): "
+            + json.dumps(co_occurring_alerts, ensure_ascii=False)
+        )
     body = json.dumps(
         {"ask": question, "model": MODEL, "additional_system_prompt": PROMPT}
     ).encode("utf-8")
@@ -192,22 +198,11 @@ def is_claim_stale(claim_obj, now_dt=None):
     return False
 
 
-def process_alert(alert, worker_id=None):
-    key = object_key(alert)
-    claim_key = key + ".claim"
-    worker_tag = f"{os.getpid()}-{worker_id or threading.get_ident()}"
-    now_utc = datetime.now(timezone.utc)
-    claim_payload = {
-        "claimedAt": now_utc.isoformat(),
-        "expiresAt": (now_utc + timedelta(seconds=CLAIM_TTL_SECONDS)).isoformat(),
-        "workerId": worker_tag,
-    }
-    claim_body = json.dumps(claim_payload, ensure_ascii=False).encode("utf-8")
-
-    # 1. Quick check: if result.json already exists, skip as duplicate
+def _try_acquire_claim(key, claim_key, claim_body):
+    """Acquire an S3 claim for key; return True if claimed, False if duplicate."""
     try:
         s3.head_object(Bucket=BUCKET, Key=key)
-        return "duplicate"
+        return False
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") not in (
             "404",
@@ -216,7 +211,6 @@ def process_alert(alert, worker_id=None):
         ):
             raise
 
-    # 2. Acquire or check .claim
     try:
         s3.put_object(
             Bucket=BUCKET,
@@ -225,84 +219,57 @@ def process_alert(alert, worker_id=None):
             ContentType="application/json",
             IfNoneMatch="*",
         )
+        return True
     except ClientError as exc:
         err_code = exc.response.get("Error", {}).get("Code", "")
-        if err_code in (
+        if err_code not in (
             "PreconditionFailed",
             "ConditionalRequestConflict",
             "412",
             "409",
         ):
-            # Claim already exists. Verify if result.json was created.
-            try:
-                s3.head_object(Bucket=BUCKET, Key=key)
-                return "duplicate"
-            except ClientError as head_exc:
-                if head_exc.response.get("Error", {}).get("Code") not in (
-                    "404",
-                    "NoSuchKey",
-                    "NotFound",
-                ):
-                    raise
-
-            # result.json does not exist. Check if claim is stale.
-            stale = False
-            try:
-                claim_obj = s3.get_object(Bucket=BUCKET, Key=claim_key)
-                stale = is_claim_stale(claim_obj)
-            except ClientError as get_exc:
-                if get_exc.response.get("Error", {}).get("Code") in (
-                    "404",
-                    "NoSuchKey",
-                    "NotFound",
-                ):
-                    stale = True
-                else:
-                    raise
-
-            if stale:
-                logging.info(f"Reclaiming stale claim for {key}")
-                s3.put_object(
-                    Bucket=BUCKET,
-                    Key=claim_key,
-                    Body=claim_body,
-                    ContentType="application/json",
-                )
-            else:
-                return "duplicate"
-        else:
             raise
 
-    # 3. Track active claim for graceful shutdown cleanup
-    with CLAIMS_LOCK:
-        ACTIVE_CLAIMS.add(claim_key)
+        try:
+            s3.head_object(Bucket=BUCKET, Key=key)
+            return False
+        except ClientError as head_exc:
+            if head_exc.response.get("Error", {}).get("Code") not in (
+                "404",
+                "NoSuchKey",
+                "NotFound",
+            ):
+                raise
 
-    result = {
-        "fingerprint": alert["fingerprint"],
-        "startsAt": datetime.fromisoformat(alert["startsAt"].replace("Z", "+00:00"))
-        .astimezone(timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z"),
-        "alert": alert,
-        "diagnosisStartedAt": datetime.now(timezone.utc).isoformat(),
-        "status": "succeeded",
-        "holmesResponse": None,
-        "attempts": [],
-    }
+        stale = False
+        try:
+            claim_obj = s3.get_object(Bucket=BUCKET, Key=claim_key)
+            stale = is_claim_stale(claim_obj)
+        except ClientError as get_exc:
+            if get_exc.response.get("Error", {}).get("Code") in (
+                "404",
+                "NoSuchKey",
+                "NotFound",
+            ):
+                stale = True
+            else:
+                raise
 
-    started = time.monotonic()
-    try:
-        holmes_resp, attempts = diagnose(alert)
-        result["holmesResponse"] = holmes_resp
-        result["attempts"] = attempts
-    except Exception as exc:
-        result["status"] = "failed"
-        result["error"] = str(exc)
-        result["attempts"] = getattr(exc, "attempts", [])
+        if not stale:
+            return False
 
-    result["diagnosedAt"] = datetime.now(timezone.utc).isoformat()
-    result["diagnosisDurationSeconds"] = round(time.monotonic() - started, 2)
+        logging.info(f"Reclaiming stale claim for {key}")
+        s3.put_object(
+            Bucket=BUCKET,
+            Key=claim_key,
+            Body=claim_body,
+            ContentType="application/json",
+        )
+        return True
 
+
+def _upload_result(key, claim_key, result):
+    """Upload result JSON to S3 and release claim tracking."""
     try:
         s3.put_object(
             Bucket=BUCKET,
@@ -311,6 +278,7 @@ def process_alert(alert, worker_id=None):
             ContentType="application/json",
             IfNoneMatch="*",
         )
+        return result["status"]
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") in ("PreconditionFailed", "412"):
             return "duplicate"
@@ -329,18 +297,106 @@ def process_alert(alert, worker_id=None):
         with CLAIMS_LOCK:
             ACTIVE_CLAIMS.discard(claim_key)
 
-    return result["status"]
+
+def _build_result_envelope(alert, diagnosis_started_at, grouped_count=1):
+    return {
+        "fingerprint": alert["fingerprint"],
+        "startsAt": datetime.fromisoformat(alert["startsAt"].replace("Z", "+00:00"))
+        .astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z"),
+        "alert": alert,
+        "groupedAlertsCount": grouped_count,
+        "diagnosisStartedAt": diagnosis_started_at,
+        "status": "succeeded",
+        "holmesResponse": None,
+        "attempts": [],
+    }
+
+
+def process_alert_group(alerts, worker_id=None):
+    """Claim all alerts in a grouped webhook, run one Holmes diagnosis, and archive to each key."""
+    if not alerts:
+        return "duplicate"
+
+    worker_tag = f"{os.getpid()}-{worker_id or threading.get_ident()}"
+    now_utc = datetime.now(timezone.utc)
+    claim_body = json.dumps(
+        {
+            "claimedAt": now_utc.isoformat(),
+            "expiresAt": (now_utc + timedelta(seconds=CLAIM_TTL_SECONDS)).isoformat(),
+            "workerId": worker_tag,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    claimed = []
+    for alert in alerts:
+        key = object_key(alert)
+        claim_key = key + ".claim"
+        if _try_acquire_claim(key, claim_key, claim_body):
+            with CLAIMS_LOCK:
+                ACTIVE_CLAIMS.add(claim_key)
+            claimed.append((alert, key, claim_key))
+
+    if not claimed:
+        return "duplicate"
+
+    primary_alert = claimed[0][0]
+    co_occurring = [item[0] for item in claimed[1:]]
+    diagnosis_started_at = datetime.now(timezone.utc).isoformat()
+    started = time.monotonic()
+
+    holmes_resp = None
+    attempts = []
+    error_str = None
+    status = "succeeded"
+    try:
+        if co_occurring:
+            holmes_resp, attempts = diagnose(primary_alert, co_occurring_alerts=co_occurring)
+        else:
+            holmes_resp, attempts = diagnose(primary_alert)
+    except Exception as exc:
+        status = "failed"
+        error_str = str(exc)
+        attempts = getattr(exc, "attempts", [])
+
+    diagnosed_at = datetime.now(timezone.utc).isoformat()
+    duration = round(time.monotonic() - started, 2)
+
+    statuses = []
+    for alert, key, claim_key in claimed:
+        result = _build_result_envelope(
+            alert, diagnosis_started_at, grouped_count=len(alerts)
+        )
+        result["status"] = status
+        result["holmesResponse"] = holmes_resp
+        result["attempts"] = attempts
+        if error_str is not None:
+            result["error"] = error_str
+        result["diagnosedAt"] = diagnosed_at
+        result["diagnosisDurationSeconds"] = duration
+        statuses.append(_upload_result(key, claim_key, result))
+
+    return statuses[0]
+
+
+def process_alert(alert, worker_id=None):
+    return process_alert_group([alert], worker_id=worker_id)
 
 
 def worker_loop(worker_id):
     logging.info(f"Worker {worker_id} started")
     while not SHUTDOWN_EVENT.is_set():
         try:
-            alert = ALERT_QUEUE.get(timeout=0.5)
+            item = ALERT_QUEUE.get(timeout=0.5)
         except queue.Empty:
             continue
         try:
-            process_alert(alert, worker_id=worker_id)
+            if isinstance(item, list):
+                process_alert_group(item, worker_id=worker_id)
+            else:
+                process_alert(item, worker_id=worker_id)
         except Exception as exc:
             logging.exception(
                 f"Worker {worker_id} encountered error processing alert: {exc}"
@@ -419,9 +475,11 @@ class Handler(BaseHTTPRequestHandler):
             for a in firing_alerts:
                 object_key(a)
 
-            # Enqueue firing alerts
-            for a in firing_alerts:
-                ALERT_QUEUE.put_nowait(a)
+            # Enqueue firing alerts (single alert as dict, grouped alerts as list)
+            if len(firing_alerts) == 1:
+                ALERT_QUEUE.put_nowait(firing_alerts[0])
+            elif len(firing_alerts) > 1:
+                ALERT_QUEUE.put_nowait(firing_alerts)
 
             data = json.dumps(
                 {"status": "accepted", "queued": len(firing_alerts)}
