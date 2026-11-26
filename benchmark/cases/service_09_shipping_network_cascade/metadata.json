@@ -1,0 +1,30 @@
+{
+  "case_id": "service_09_shipping_network_cascade",
+  "title": "shippingservice 서비스 포트 단절에 따른 checkoutservice 연쇄 오류 및 주문 실패 (Running Pod Cascade)",
+  "category": "cascade_failure",
+  "severity": "critical",
+  "namespace": "onlineboutique",
+  "target_deployment": "shippingservice",
+  "ground_truth": {
+    "root_cause_component": "shippingservice",
+    "fault_type": "service_endpoint_port_mismatch_cascade",
+    "injected_condition": "kubectl patch service shippingservice -n onlineboutique --type='json' -p='[{\"op\": \"replace\", \"path\": \"/spec/ports/0/targetPort\", \"value\": 50099}]'",
+    "symptom": "All pods including shippingservice remain 1/1 Running (readiness probes pass on pod port 50051), but checkoutservice fails GetQuote/ShipOrder gRPC calls to shippingservice:50051 because Service shippingservice forwards to targetPort 50099, causing frontend POST /cart/checkout HTTP 500 (OrderFailureRateHigh).",
+    "expected_remediation": "kubectl patch service shippingservice -n onlineboutique --type='json' -p='[{\"op\": \"replace\", \"path\": \"/spec/ports/0/targetPort\", \"value\": 50051}]'"
+  },
+  "evaluation_criteria": {
+    "target_component": "shippingservice",
+    "target_fault_type": "service/shippingservice targetPort mismatch (50099 instead of 50051) causing cascading checkoutservice and frontend order failures while pods remain Running",
+    "required_evidence": [
+      "OrderFailureRateHigh alert on frontend or HTTP 500 errors on /cart/checkout",
+      "checkoutservice error calling shippingservice (connection refused or unavailable on shippingservice:50051)",
+      "service/shippingservice targetPort set to 50099 while containerPort/probe is 50051 (pods still 1/1 Running)"
+    ],
+    "scoring_note": "All pods are 1/1 Running. A report that blames checkoutservice or claims shippingservice pod is down without identifying the service/shippingservice targetPort 50099 mismatch should receive at most 15/30 on root_cause_score."
+  },
+  "expected_alert": {
+    "names": ["OrderFailureRateHigh"],
+    "service": "frontend",
+    "service_labels": ["service", "job"]
+  }
+}
